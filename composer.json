@@ -1,0 +1,19 @@
+{
+  "name": "avs/booking",
+  "description": "Модуль бронирования для CMS Битрикс с интеграцией LibreBooking, ЮKassa, Битрикс24 и 1С:УНФ",
+  "type": "bitrix-module",
+  "license": "GPL-3.0",
+  "authors": [
+    {
+      "name": "AVS Group",
+      "email": "d.sumenkov@avsgroup.ru"
+    }
+  ],
+  "require": {
+    "php": ">=7.4",
+    "composer/installers": "^1.0"
+  },
+  "extra": {
+    "installer-name": "avs.booking"
+  }
+}

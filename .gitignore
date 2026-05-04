@@ -1,0 +1,42 @@
+```gitignore
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+/upload/*.log
+/upload/*.json
+
+# Cache
+/tpl_c/
+/upload/booking_token.json
+
+# Composer
+/vendor/
+composer.phar
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Backups
+*.bak
+*.backup
+*.sql
+*.zip
+*.tar.gz
+
+# Test files
+/test/
+/tests/
+*.test
+*.spec
+
+# Environment
+.env
+.env.local
