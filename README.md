@@ -32,3 +32,36 @@ cp -r avs_booking /путь/до/сайта/local/modules/
 # 3. Настройка модуля
 # Настройки → Настройки модулей → AVS Booking
 ```
+
+## Документация
+
+Инструкция по установке
+
+Настройка 1С
+
+API документация
+
+## Структура
+
+```text
+/local/modules/avs_booking/
+├── install/          # Установщик модуля
+├── admin/            # Административные страницы
+├── lib/              # Библиотеки и API клиенты
+├── templates/        # Шаблоны компонента
+├── events/           # Обработчики событий
+├── include.php       # Основной класс
+├── ajax.php          # AJAX-обработчик
+├── api_1c.php        # API для 1С
+├── options.php       # Настройки модуля
+└── webhook_yookassa.php # Вебхук ЮKassa
+```
+
+## Лицензия
+
+GPL-3.0
+
+## Поддержка
+
+Разработчик: AVS Group
+Email: support@avsgroup.ru
