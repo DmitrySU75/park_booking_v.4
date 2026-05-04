@@ -1,8 +1,3 @@
-
----
-
-## Файл 30: `/local/modules/avs_booking/LICENSE.md`
-
 ```markdown
 # GNU GENERAL PUBLIC LICENSE
 
