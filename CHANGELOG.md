@@ -1,4 +1,3 @@
-```markdown
 # Changelog
 
 ## [1.0.0] - 2025-01-15
@@ -69,4 +68,7 @@
 Формат файла основан на [Keep a Changelog](https://keepachangelog.com/ru/1.0.0/).
 
 Версионирование следует [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+```
+
 ```
