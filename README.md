@@ -64,4 +64,4 @@ GPL-3.0
 ## Поддержка
 
 Разработчик: AVS Group
-Email: support@avsgroup.ru
+Email: d.sumenkov@avsgroup.ru
