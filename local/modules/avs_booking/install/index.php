@@ -4,6 +4,9 @@ use Bitrix\Main\ModuleManager;
 use Bitrix\Main\Config\Option;
 use Bitrix\Main\Loader;
 use Bitrix\Main\EventManager;
+use Bitrix\Main\Localization\Loc;
+
+Loc::loadMessages(__FILE__);
 
 class avs_booking extends CModule
 {
@@ -15,6 +18,10 @@ class avs_booking extends CModule
     public $PARTNER_NAME;
     public $PARTNER_URI;
 
+    private $events = [
+        ['sale', 'OnSalePaymentPaid', 'avs_booking', 'AVSBookingHandlers', 'onSalePaymentPaid'],
+    ];
+
     public function __construct()
     {
         $arModuleVersion = [];
@@ -22,9 +29,9 @@ class avs_booking extends CModule
 
         $this->MODULE_VERSION = $arModuleVersion['VERSION'];
         $this->MODULE_VERSION_DATE = $arModuleVersion['VERSION_DATE'];
-        $this->MODULE_NAME = 'Модуль бронирования AVS';
-        $this->MODULE_DESCRIPTION = 'Интеграция с LibreBooking, ЮKassa, Битрикс24, 1С';
-        $this->PARTNER_NAME = 'AVS Group';
+        $this->MODULE_NAME = Loc::getMessage('AVS_BOOKING_MODULE_NAME') ?: 'Модуль бронирования AVS';
+        $this->MODULE_DESCRIPTION = Loc::getMessage('AVS_BOOKING_MODULE_DESC') ?: 'Интеграция с LibreBooking, ЮKassa, Битрикс24, 1С';
+        $this->PARTNER_NAME = Loc::getMessage('AVS_BOOKING_PARTNER_NAME') ?: 'AVS Group';
         $this->PARTNER_URI = 'https://avsgroup.ru';
     }
 
@@ -32,24 +39,69 @@ class avs_booking extends CModule
     {
         global $APPLICATION;
 
+        // Проверка версии главного модуля
         if (!CheckVersion(ModuleManager::getVersion('main'), '14.00.00')) {
-            $APPLICATION->ThrowException('Версия главного модуля ниже 14.00.00');
+            $APPLICATION->ThrowException(Loc::getMessage('AVS_BOOKING_INSTALL_ERROR_VERSION') ?: 'Версия главного модуля ниже 14.00.00');
             return false;
         }
+
+        // Проверка необходимых расширений PHP
+        $requiredExtensions = ['curl', 'json', 'mbstring', 'pdo_mysql'];
+        $missingExtensions = [];
+        foreach ($requiredExtensions as $ext) {
+            if (!extension_loaded($ext)) {
+                $missingExtensions[] = $ext;
+            }
+        }
+        if (!empty($missingExtensions)) {
+            $APPLICATION->ThrowException('Отсутствуют необходимые расширения PHP: ' . implode(', ', $missingExtensions));
+            return false;
+        }
+
+        // Проверка модулей Битрикс
+        if (!Loader::includeModule('iblock')) {
+            $APPLICATION->ThrowException('Модуль "Инфоблоки" не установлен');
+            return false;
+        }
+
+        ModuleManager::registerModule($this->MODULE_ID);
 
         $this->InstallFiles();
         $this->InstallDB();
         $this->InstallEvents();
 
-        ModuleManager::registerModule($this->MODULE_ID);
+        // Вывод сообщения об успешной установке
+        $APPLICATION->IncludeAdminFile(
+            Loc::getMessage('AVS_BOOKING_INSTALL_TITLE') ?: 'Установка модуля бронирования AVS',
+            __DIR__ . '/step.php'
+        );
 
         return true;
     }
 
     public function DoUninstall()
     {
+        global $APPLICATION;
+
+        $context = \Bitrix\Main\Application::getInstance()->getContext();
+        $request = $context->getRequest();
+        $step = (int)$request->get('step');
+
+        if ($step < 2) {
+            $APPLICATION->IncludeAdminFile(
+                Loc::getMessage('AVS_BOOKING_UNINSTALL_TITLE') ?: 'Удаление модуля бронирования AVS',
+                __DIR__ . '/unstep.php'
+            );
+            return false;
+        }
+
+        $preserveData = ($request->get('preserve_data') === 'Y');
+
+        if (!$preserveData) {
+            $this->UnInstallDB();
+        }
+
         $this->UnInstallFiles();
-        $this->UnInstallDB();
         $this->UnInstallEvents();
 
         ModuleManager::unRegisterModule($this->MODULE_ID);
@@ -59,13 +111,20 @@ class avs_booking extends CModule
 
     public function InstallFiles()
     {
-        // Создаём папку компонента
+        // 1. Копируем admin-файлы в /bitrix/admin/
+        $adminSource = __DIR__ . '/../admin';
+        $adminTarget = $_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin';
+        if (is_dir($adminSource)) {
+            CopyDirFiles($adminSource, $adminTarget, true, true);
+        }
+
+        // 2. Создаём компонент
         $componentDir = $_SERVER['DOCUMENT_ROOT'] . '/bitrix/components/avs_booking/booking.form';
         if (!is_dir($componentDir)) {
             mkdir($componentDir, 0755, true);
         }
 
-        // Файл .description.php
+        // 2.1. Файл .description.php
         $desc = '<?php
 if (!defined("B_PROLOG_INCLUDED") || B_PROLOG_INCLUDED !== true) die();
 
@@ -80,7 +139,7 @@ $arComponentDescription = [
 ';
         file_put_contents($componentDir . '/.description.php', $desc);
 
-        // Файл component.php
+        // 2.2. Файл component.php
         $comp = '<?php
 if (!defined("B_PROLOG_INCLUDED") || B_PROLOG_INCLUDED !== true) die();
 
@@ -102,17 +161,16 @@ $this->IncludeComponentTemplate();
 ';
         file_put_contents($componentDir . '/component.php', $comp);
 
-        // Папка шаблона
+        // 2.3. Папка шаблона
         $templateDir = $componentDir . '/templates/.default';
         if (!is_dir($templateDir)) {
             mkdir($templateDir, 0755, true);
         }
 
-        // Копируем admin-файлы
-        $adminSource = __DIR__ . '/../admin';
-        $adminTarget = $_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin';
-        if (is_dir($adminSource)) {
-            CopyDirFiles($adminSource, $adminTarget, true, true);
+        // 2.4. Копируем template.php из модуля
+        $sourceTemplate = $_SERVER['DOCUMENT_ROOT'] . '/local/modules/avs_booking/templates/.default/template.php';
+        if (file_exists($sourceTemplate)) {
+            copy($sourceTemplate, $templateDir . '/template.php');
         }
 
         return true;
@@ -120,8 +178,12 @@ $this->IncludeComponentTemplate();
 
     public function UnInstallFiles()
     {
-        DeleteDirFilesEx('/bitrix/components/avs_booking/booking.form');
+        // Удаляем admin-файлы
         DeleteDirFilesEx('/bitrix/admin/avs_booking_price_periods.php');
+
+        // Удаляем компонент
+        DeleteDirFilesEx('/bitrix/components/avs_booking/booking.form');
+
         return true;
     }
 
@@ -129,13 +191,15 @@ $this->IncludeComponentTemplate();
     {
         $eventManager = EventManager::getInstance();
 
-        $eventManager->registerEventHandler(
-            'sale',
-            'OnSalePaymentPaid',
-            $this->MODULE_ID,
-            'AVSBookingHandlers',
-            'onSalePaymentPaid'
-        );
+        foreach ($this->events as $event) {
+            $eventManager->registerEventHandler(
+                $event[0],
+                $event[1],
+                $event[2],
+                $event[3],
+                $event[4]
+            );
+        }
 
         return true;
     }
@@ -144,13 +208,15 @@ $this->IncludeComponentTemplate();
     {
         $eventManager = EventManager::getInstance();
 
-        $eventManager->unRegisterEventHandler(
-            'sale',
-            'OnSalePaymentPaid',
-            $this->MODULE_ID,
-            'AVSBookingHandlers',
-            'onSalePaymentPaid'
-        );
+        foreach ($this->events as $event) {
+            $eventManager->unRegisterEventHandler(
+                $event[0],
+                $event[1],
+                $event[2],
+                $event[3],
+                $event[4]
+            );
+        }
 
         return true;
     }
@@ -160,19 +226,32 @@ $this->IncludeComponentTemplate();
         // Получаем текущий домен
         $domain = $_SERVER['HTTP_HOST'] ?? 'park.na4u.ru';
 
+        // API LibreBooking
         Option::set($this->MODULE_ID, 'api_url', 'https://' . $domain . '/booking/Web/Services/index.php');
         Option::set($this->MODULE_ID, 'api_username', '');
         Option::set($this->MODULE_ID, 'api_password', '');
         Option::set($this->MODULE_ID, 'default_schedule_id', 2);
         Option::set($this->MODULE_ID, 'timezone_offset', '+05:00');
+
+        // Оплата
         Option::set($this->MODULE_ID, 'default_deposit_amount', 0);
         Option::set($this->MODULE_ID, 'service_product_id', 0);
         Option::set($this->MODULE_ID, 'yookassa_paysystem_id', 2);
+        Option::set($this->MODULE_ID, 'yookassa_shop_id', '');
+        Option::set($this->MODULE_ID, 'yookassa_secret_key', '');
+
+        // Уведомления
         Option::set($this->MODULE_ID, 'admin_email', '');
         Option::set($this->MODULE_ID, 'bitrix24_webhook', '');
+
+        // API для 1С
         Option::set($this->MODULE_ID, 'api_1c_key', md5(uniqid('avs_booking_', true) . time()));
+
+        // Экспорт в 1С
         Option::set($this->MODULE_ID, 'export_1c_url', '');
         Option::set($this->MODULE_ID, 'export_1c_key', '');
+
+        // Сезонные настройки
         Option::set($this->MODULE_ID, 'summer_season_start', '01.06');
         Option::set($this->MODULE_ID, 'summer_season_end', '31.08');
         Option::set($this->MODULE_ID, 'winter_end_hour', '22');
@@ -186,8 +265,12 @@ $this->IncludeComponentTemplate();
 
     public function UnInstallDB()
     {
+        // Удаляем настройки модуля
         Option::delete($this->MODULE_ID);
+
+        // Удаляем инфоблоки (опционально)
         $this->removeIblocks();
+
         return true;
     }
 
@@ -197,8 +280,9 @@ $this->IncludeComponentTemplate();
             return false;
         }
 
-        // 1. Инфоблок для услуг и скидок
         $iblock = new \CIBlock();
+
+        // 1. Инфоблок для услуг и скидок
         $servicesIblockId = $iblock->Add([
             'ACTIVE' => 'Y',
             'NAME' => 'Услуги и скидки бронирования',
