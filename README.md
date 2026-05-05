@@ -35,11 +35,11 @@ cp -r avs_booking /путь/до/сайта/local/modules/
 
 ## Документация
 
-[Инструкция по установке](./docs/install-module.md)
+[Инструкция по установке](./docs/INSTALL-MODULE.md)
 
-[Настройка 1С](./docs/1c-setup.md)
+[Настройка 1С](./docs/1C-SETUP.md)
 
-[API документация](./docs/api.md)
+[API документация](./docs/API.md)
 
 ## Структура
 
