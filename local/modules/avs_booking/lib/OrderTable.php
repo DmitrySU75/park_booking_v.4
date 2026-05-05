@@ -23,7 +23,7 @@ class OrderTable extends Entity\DataManager
                 'required' => true,
                 'unique' => true
             ]),
-            new Entity\IntegerField('PAVILION_ID', [
+            new Entity\StringField('PAVILION_ID', [
                 'required' => true
             ]),
             new Entity\StringField('PAVILION_NAME'),

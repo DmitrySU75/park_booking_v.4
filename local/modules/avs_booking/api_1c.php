@@ -1,364 +1,91 @@
 <?php
-require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
-require_once __DIR__ . '/include.php';
+require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php');
+
+use AVS\Booking\Order;
+use AVS\Booking\OneCIntegration;
+
+CModule::IncludeModule('avs_booking');
 
 header('Content-Type: application/json');
 
-$logFile = $_SERVER['DOCUMENT_ROOT'] . '/upload/api_1c_debug.log';
-
-function writeApiLog($message)
-{
-    global $logFile;
-    file_put_contents($logFile, date('[Y-m-d H:i:s]') . ' [api_1c.php] ' . $message . PHP_EOL, FILE_APPEND);
-}
-
-writeApiLog('========== НАЧАЛО ==========');
-writeApiLog('REQUEST: ' . print_r($_REQUEST, true));
-writeApiLog('RAW INPUT: ' . file_get_contents('php://input'));
-
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    http_response_code(405);
-    echo json_encode(['success' => false, 'message' => 'Method not allowed']);
-    writeApiLog('ОШИБКА: Method not allowed');
-    die();
-}
-
 $apiKey = $_SERVER['HTTP_X_API_KEY'] ?? '';
-$input = json_decode(file_get_contents('php://input'), true);
-if (!$apiKey && isset($input['api_key'])) {
-    $apiKey = $input['api_key'];
-}
+$configuredKey = \Bitrix\Main\Config\Option::get('avs_booking', 'api_key', '');
 
-$expectedKey = \Bitrix\Main\Config\Option::get('avs_booking', 'api_1c_key', '');
-if (!$expectedKey || $apiKey !== $expectedKey) {
+if (!$configuredKey || $apiKey !== $configuredKey) {
     http_response_code(401);
-    echo json_encode(['success' => false, 'message' => 'Unauthorized: Invalid API key']);
-    writeApiLog('ОШИБКА: Unauthorized');
-    die();
+    echo json_encode(['success' => false, 'error' => 'Unauthorized']);
+    exit;
 }
 
-writeApiLog('API-ключ проверен успешно');
+$action = $_GET['action'] ?? '';
+$method = $_SERVER['REQUEST_METHOD'];
 
-$action = $input['action'] ?? '';
-
-if (empty($action)) {
-    http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'Missing action parameter']);
-    writeApiLog('ОШИБКА: Missing action');
-    die();
-}
-
-try {
-    switch ($action) {
-        case 'create_booking':
-            createBooking($input);
-            break;
-        case 'cancel_booking':
-            cancelBooking($input);
-            break;
-        case 'change_booking':
-            changeBooking($input);
-            break;
-        case 'update_prices':
-            updatePrices($input);
-            break;
-        case 'get_booking_status':
-            getBookingStatus($input);
-            break;
-        default:
-            http_response_code(400);
-            echo json_encode(['success' => false, 'message' => 'Unknown action: ' . $action]);
-            writeApiLog('ОШИБКА: Unknown action - ' . $action);
-    }
-} catch (Exception $e) {
-    http_response_code(500);
-    echo json_encode(['success' => false, 'message' => $e->getMessage()]);
-    writeApiLog('ИСКЛЮЧЕНИЕ: ' . $e->getMessage());
-}
-
-writeApiLog('========== КОНЕЦ ==========');
-
-function createBooking($input)
-{
-    writeApiLog('========== CREATE BOOKING ==========');
-
-    $required = ['resource_id', 'start_time', 'end_time', 'first_name', 'last_name'];
-    foreach ($required as $field) {
-        if (empty($input[$field])) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'message' => "Missing required field: {$field}"]);
-            writeApiLog("ОШИБКА: Missing field - {$field}");
-            return;
-        }
-    }
-
-    writeApiLog("Параметры: resource_id={$input['resource_id']}, start_time={$input['start_time']}, end_time={$input['end_time']}");
-
-    $gazebo = AVSBookingModule::getGazeboDataByResourceId((int)$input['resource_id']);
-    if (!$gazebo) {
+switch ($action) {
+    case 'export_orders':
+        exportOrders();
+        break;
+    case 'import_status':
+        importStatus();
+        break;
+    case 'sync_prices':
+        syncPrices();
+        break;
+    default:
         http_response_code(404);
-        echo json_encode(['success' => false, 'message' => 'Resource not found in Bitrix']);
-        writeApiLog("ОШИБКА: Resource not found - resource_id={$input['resource_id']}");
+        echo json_encode(['success' => false, 'error' => 'Action not found']);
+}
+
+function exportOrders()
+{
+    $fromDate = $_GET['from_date'] ?? date('Y-m-d', strtotime('-7 days'));
+    $toDate = $_GET['to_date'] ?? date('Y-m-d');
+
+    $orders = Order::getListByPeriod($fromDate, $toDate);
+
+    $export = new OneCIntegration();
+    $result = $export->exportOrders($orders);
+
+    echo json_encode($result);
+}
+
+function importStatus()
+{
+    $data = json_decode(file_get_contents('php://input'), true);
+
+    if (!isset($data['order_number']) || !isset($data['status'])) {
+        echo json_encode(['success' => false, 'error' => 'Missing order_number or status']);
         return;
     }
 
-    writeApiLog("Беседка найдена: {$gazebo['name']}, ID={$gazebo['resource_id']}");
+    $order = Order::getByOrderNumber($data['order_number']);
 
-    $available = AVSBookingModule::checkAvailability(
-        (int)$input['resource_id'],
-        $input['start_time'],
-        $input['end_time']
-    );
-
-    if (!$available) {
-        http_response_code(409);
-        echo json_encode(['success' => false, 'message' => 'Selected time slot is already booked']);
-        writeApiLog("ОШИБКА: Time slot already booked");
+    if (!$order) {
+        echo json_encode(['success' => false, 'error' => 'Order not found']);
         return;
     }
 
-    writeApiLog("Время доступно");
+    $updateResult = Order::updateStatus($order['ID'], $data['status']);
 
-    try {
-        $userData = [
-            'first_name' => $input['first_name'],
-            'last_name' => $input['last_name'],
-            'phone' => $input['phone'] ?? '',
-            'email' => $input['email'] ?? '',
-            'comment' => $input['comment'] ?? 'Создано из 1С'
-        ];
-
-        $result = AVSBookingModule::createBooking(
-            (int)$input['resource_id'],
-            $input['start_time'],
-            $input['end_time'],
-            $userData
-        );
-
-        if (isset($result['referenceNumber'])) {
-            writeApiLog("Бронирование создано: {$result['referenceNumber']}");
-
-            echo json_encode([
-                'success' => true,
-                'reference' => $result['referenceNumber'],
-                'message' => 'Booking created successfully'
-            ]);
-        } else {
-            throw new Exception('Failed to create booking in LibreBooking');
-        }
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
-        writeApiLog("ОШИБКА: " . $e->getMessage());
+    if ($updateResult) {
+        echo json_encode(['success' => true]);
+    } else {
+        echo json_encode(['success' => false, 'error' => 'Update failed']);
     }
 }
 
-function cancelBooking($input)
+function syncPrices()
 {
-    writeApiLog('========== CANCEL BOOKING ==========');
+    $data = json_decode(file_get_contents('php://input'), true);
 
-    $required = ['reference'];
-    foreach ($required as $field) {
-        if (empty($input[$field])) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'message' => "Missing required field: {$field}"]);
-            writeApiLog("ОШИБКА: Missing field - {$field}");
-            return;
-        }
+    if (!isset($data['prices']) || !is_array($data['prices'])) {
+        echo json_encode(['success' => false, 'error' => 'Invalid prices data']);
+        return;
     }
 
-    $reference = $input['reference'];
-    writeApiLog("Отмена бронирования: {$reference}");
+    $integration = new OneCIntegration();
+    $result = $integration->syncPrices($data['prices']);
 
-    try {
-        $api = AVSBookingModule::getApiClient();
-        $result = $api->cancelReservation($reference);
-
-        if ($result) {
-            writeApiLog("Бронирование отменено: {$reference}");
-            echo json_encode(['success' => true, 'message' => 'Booking cancelled successfully']);
-        } else {
-            throw new Exception('Failed to cancel booking');
-        }
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
-        writeApiLog("ОШИБКА: " . $e->getMessage());
-    }
+    echo json_encode($result);
 }
 
-function changeBooking($input)
-{
-    writeApiLog('========== CHANGE BOOKING ==========');
-
-    $required = ['reference', 'new_start_time', 'new_end_time'];
-    foreach ($required as $field) {
-        if (empty($input[$field])) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'message' => "Missing required field: {$field}"]);
-            writeApiLog("ОШИБКА: Missing field - {$field}");
-            return;
-        }
-    }
-
-    $reference = $input['reference'];
-    $newResourceId = isset($input['new_resource_id']) ? (int)$input['new_resource_id'] : null;
-    $newStartTime = $input['new_start_time'];
-    $newEndTime = $input['new_end_time'];
-
-    writeApiLog("Изменение бронирования: {$reference}");
-    writeApiLog("Новое время: {$newStartTime} - {$newEndTime}");
-
-    try {
-        $api = AVSBookingModule::getApiClient();
-
-        if ($newResourceId) {
-            writeApiLog("Новый ресурс ID: {$newResourceId}");
-            $available = AVSBookingModule::checkAvailability($newResourceId, $newStartTime, $newEndTime);
-            if (!$available) {
-                http_response_code(409);
-                echo json_encode(['success' => false, 'message' => 'New time slot is already booked']);
-                writeApiLog("ОШИБКА: Новый слот уже занят");
-                return;
-            }
-        }
-
-        $result = $api->updateReservation($reference, $newStartTime, $newEndTime, $newResourceId);
-
-        if ($result) {
-            writeApiLog("Бронирование изменено: {$reference}");
-            echo json_encode([
-                'success' => true,
-                'message' => 'Booking updated successfully',
-                'reference' => $reference
-            ]);
-        } else {
-            throw new Exception('Failed to update booking');
-        }
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
-        writeApiLog("ОШИБКА: " . $e->getMessage());
-    }
-}
-
-function updatePrices($input)
-{
-    writeApiLog('========== UPDATE PRICES ==========');
-
-    $required = ['prices'];
-    foreach ($required as $field) {
-        if (empty($input[$field]) || !is_array($input[$field])) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'message' => "Missing or invalid field: {$field}"]);
-            writeApiLog("ОШИБКА: Missing or invalid field - {$field}");
-            return;
-        }
-    }
-
-    $updated = 0;
-    $errors = [];
-    $pricePeriodsIblockId = \Bitrix\Main\Config\Option::get('avs_booking', 'price_periods_iblock_id', 0);
-
-    writeApiLog("Количество записей: " . count($input['prices']));
-
-    foreach ($input['prices'] as $priceData) {
-        $resourceId = isset($priceData['resource_id']) ? (int)$priceData['resource_id'] : 0;
-
-        if ($resourceId > 0) {
-            $elementId = $resourceId;
-        } else {
-            $res = \CIBlockElement::GetList(
-                [],
-                ['IBLOCK_ID' => 12, 'NAME' => $priceData['resource_name'], 'ACTIVE' => 'Y'],
-                false,
-                false,
-                ['ID']
-            );
-            if ($el = $res->Fetch()) {
-                $elementId = $el['ID'];
-            } else {
-                $errors[] = "Resource not found: {$priceData['resource_name']}";
-                writeApiLog("Ресурс не найден: {$priceData['resource_name']}");
-                continue;
-            }
-        }
-
-        if ($pricePeriodsIblockId) {
-            CIBlockElement::DeleteByProperty('RESOURCE_ID', $elementId);
-
-            $el = new CIBlockElement();
-            $el->Add([
-                'IBLOCK_ID' => $pricePeriodsIblockId,
-                'NAME' => "Период с {$priceData['date_from']} по {$priceData['date_to']}",
-                'ACTIVE' => 'Y',
-                'PROPERTY_VALUES' => [
-                    'RESOURCE_ID' => $elementId,
-                    'DATE_FROM' => $priceData['date_from'],
-                    'DATE_TO' => $priceData['date_to'],
-                    'PRICE_HOUR' => $priceData['price_hour'],
-                    'PRICE_DAY' => $priceData['price_day'],
-                    'PRICE_NIGHT' => $priceData['price_night']
-                ]
-            ]);
-            $updated++;
-
-            \CIBlockElement::SetPropertyValues($elementId, 12, $priceData['price_hour'], 'PRICE_HOUR');
-            \CIBlockElement::SetPropertyValues($elementId, 12, $priceData['price_day'], 'PRICE');
-            \CIBlockElement::SetPropertyValues($elementId, 12, $priceData['price_night'], 'PRICE_NIGHT');
-            writeApiLog("Обновлены цены для беседки ID {$elementId}");
-        }
-    }
-
-    writeApiLog("Итог: обновлено {$updated}, ошибок " . count($errors));
-
-    echo json_encode([
-        'success' => true,
-        'updated' => $updated,
-        'errors' => $errors,
-        'message' => "Обновлено цен: {$updated}"
-    ]);
-}
-
-function getBookingStatus($input)
-{
-    writeApiLog('========== GET BOOKING STATUS ==========');
-
-    $required = ['reference'];
-    foreach ($required as $field) {
-        if (empty($input[$field])) {
-            http_response_code(400);
-            echo json_encode(['success' => false, 'message' => "Missing required field: {$field}"]);
-            writeApiLog("ОШИБКА: Missing field - {$field}");
-            return;
-        }
-    }
-
-    $reference = $input['reference'];
-    writeApiLog("Запрос статуса: {$reference}");
-
-    try {
-        $api = AVSBookingModule::getApiClient();
-        $reservation = $api->getReservation($reference);
-
-        if ($reservation) {
-            $status = 'active';
-            if (isset($reservation['startDate']) && strtotime($reservation['startDate']) < time()) {
-                $status = 'completed';
-            }
-
-            echo json_encode([
-                'success' => true,
-                'reference' => $reference,
-                'status' => $status,
-                'start_time' => $reservation['startDate'] ?? null,
-                'end_time' => $reservation['endDate'] ?? null
-            ]);
-        } else {
-            echo json_encode(['success' => false, 'message' => 'Booking not found']);
-        }
-    } catch (Exception $e) {
-        http_response_code(500);
-        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
-    }
-}
+require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_after.php');

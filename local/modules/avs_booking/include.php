@@ -11,12 +11,16 @@ require_once __DIR__ . '/lib/Export1C.php';
 require_once __DIR__ . '/lib/OrderTable.php';
 require_once __DIR__ . '/lib/Order.php';
 require_once __DIR__ . '/lib/Api.php';
+require_once __DIR__ . '/lib/Payment.php';
+require_once __DIR__ . '/lib/LibreBookingClient.php';
+require_once __DIR__ . '/lib/YookassaHandler.php';
+require_once __DIR__ . '/lib/OneCIntegration.php';
+require_once __DIR__ . '/lib/PriceCalculator.php';
+require_once __DIR__ . '/lib/AdminExtension.php';
 
-// Константы юридических лиц
 define('AVS_LEGAL_BETON_SYSTEMS', 'beton_systems');
 define('AVS_LEGAL_PARK_VICTORY', 'park_victory');
 
-// Маппинг беседок к юр.лицам
 $GLOBALS['AVS_BOOKING_PAVILION_TO_LEGAL'] = [
     'shatrash' => AVS_LEGAL_BETON_SYSTEMS,
     'chemodanchik' => AVS_LEGAL_BETON_SYSTEMS,
@@ -140,6 +144,51 @@ class AVSBookingModule
                 'deposit_amount' => (float)$element['PROPERTY_DEPOSIT_AMOUNT_VALUE'],
                 'min_hours' => (int)$element['PROPERTY_MIN_HOURS_VALUE'] ?: 4,
                 'legal_entity' => $element['PROPERTY_LEGAL_ENTITY_VALUE'] ?: self::getLegalEntityByPavilion($element['NAME'])
+            ];
+        }
+
+        return null;
+    }
+
+    public static function getGazeboDataByName($name)
+    {
+        if (!Loader::includeModule('iblock')) {
+            return null;
+        }
+
+        $res = \CIBlockElement::GetList(
+            [],
+            ['IBLOCK_ID' => 12, 'NAME' => $name, 'ACTIVE' => 'Y'],
+            false,
+            ['nTopCount' => 1],
+            [
+                'ID',
+                'NAME',
+                'PROPERTY_LIBREBOOKING_RESOURCE_ID',
+                'PROPERTY_PRICE_HOUR',
+                'PROPERTY_PRICE',
+                'PROPERTY_PRICE_NIGHT',
+                'PROPERTY_NIGHT_SEASON_START',
+                'PROPERTY_NIGHT_SEASON_END',
+                'PROPERTY_DEPOSIT_AMOUNT',
+                'PROPERTY_MIN_HOURS',
+                'PROPERTY_LEGAL_ENTITY'
+            ]
+        );
+
+        if ($element = $res->Fetch()) {
+            return [
+                'id' => (int)$element['ID'],
+                'name' => (string)$element['NAME'],
+                'resource_id' => (int)$element['PROPERTY_LIBREBOOKING_RESOURCE_ID_VALUE'],
+                'hourly_price' => (float)$element['PROPERTY_PRICE_HOUR_VALUE'],
+                'full_day_price' => (float)$element['PROPERTY_PRICE_VALUE'],
+                'night_price' => (float)$element['PROPERTY_PRICE_NIGHT_VALUE'],
+                'night_season_start' => $element['PROPERTY_NIGHT_SEASON_START_VALUE'],
+                'night_season_end' => $element['PROPERTY_NIGHT_SEASON_END_VALUE'],
+                'deposit_amount' => (float)$element['PROPERTY_DEPOSIT_AMOUNT_VALUE'],
+                'min_hours' => (int)$element['PROPERTY_MIN_HOURS_VALUE'] ?: 4,
+                'legal_entity' => $element['PROPERTY_LEGAL_ENTITY_VALUE']
             ];
         }
 

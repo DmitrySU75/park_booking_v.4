@@ -1,6 +1,8 @@
 <?php
 
-class AVSPaymentHandler
+namespace AVS\Booking;
+
+class YookassaHandler
 {
     private $shopId;
     private $secretKey;
@@ -11,26 +13,8 @@ class AVSPaymentHandler
         $this->secretKey = $secretKey;
     }
 
-    public function createPayment($amount, $orderId, $description, $returnUrl)
+    public function createPayment($paymentData)
     {
-        $paymentData = [
-            'amount' => [
-                'value' => $amount,
-                'currency' => 'RUB'
-            ],
-            'payment_method_data' => [
-                'type' => 'bank_card'
-            ],
-            'confirmation' => [
-                'type' => 'redirect',
-                'return_url' => $returnUrl
-            ],
-            'description' => $description,
-            'metadata' => [
-                'order_id' => $orderId
-            ]
-        ];
-
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, 'https://api.yookassa.ru/v3/payments');
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
