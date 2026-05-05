@@ -1,4 +1,3 @@
-```gitignore
 # IDE
 .vscode/
 .idea/
@@ -40,5 +39,3 @@ Desktop.ini
 # Environment
 .env
 .env.local
-
-```
