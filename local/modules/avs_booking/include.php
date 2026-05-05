@@ -1,3 +1,4 @@
+// local/modules/avs_booking/include.php
 <?php
 
 use Bitrix\Main\Loader;
@@ -8,6 +9,21 @@ require_once __DIR__ . '/lib/PaymentHandler.php';
 require_once __DIR__ . '/lib/NotificationService.php';
 require_once __DIR__ . '/lib/ServicesManager.php';
 require_once __DIR__ . '/lib/Export1C.php';
+require_once __DIR__ . '/lib/OrderTable.php';
+require_once __DIR__ . '/lib/Order.php';
+require_once __DIR__ . '/lib/Api.php';
+
+// Константы юридических лиц
+define('AVS_LEGAL_BETON_SYSTEMS', 'beton_systems');
+define('AVS_LEGAL_PARK_VICTORY', 'park_victory');
+
+// Маппинг беседок к юр.лицам
+$GLOBALS['AVS_BOOKING_PAVILION_TO_LEGAL'] = [
+    'shatrash' => AVS_LEGAL_BETON_SYSTEMS,
+    'chemodanchik' => AVS_LEGAL_BETON_SYSTEMS,
+    'victory_park' => AVS_LEGAL_PARK_VICTORY,
+    'victory_lake' => AVS_LEGAL_PARK_VICTORY,
+];
 
 class AVSBookingModule
 {
@@ -51,7 +67,8 @@ class AVSBookingModule
                 'PROPERTY_NIGHT_SEASON_START',
                 'PROPERTY_NIGHT_SEASON_END',
                 'PROPERTY_DEPOSIT_AMOUNT',
-                'PROPERTY_MIN_HOURS'
+                'PROPERTY_MIN_HOURS',
+                'PROPERTY_LEGAL_ENTITY'
             ]
         );
 
@@ -66,11 +83,19 @@ class AVSBookingModule
                 'night_season_start' => $element['PROPERTY_NIGHT_SEASON_START_VALUE'],
                 'night_season_end' => $element['PROPERTY_NIGHT_SEASON_END_VALUE'],
                 'deposit_amount' => (float)$element['PROPERTY_DEPOSIT_AMOUNT_VALUE'],
-                'min_hours' => (int)$element['PROPERTY_MIN_HOURS_VALUE'] ?: 4
+                'min_hours' => (int)$element['PROPERTY_MIN_HOURS_VALUE'] ?: 4,
+                'legal_entity' => $element['PROPERTY_LEGAL_ENTITY_VALUE'] ?: self::getLegalEntityByPavilion($element['NAME'])
             ];
         }
 
         return null;
+    }
+
+    private static function getLegalEntityByPavilion($pavilionName)
+    {
+        global $AVS_BOOKING_PAVILION_TO_LEGAL;
+        $pavilionKey = strtolower(str_replace(' ', '_', $pavilionName));
+        return $AVS_BOOKING_PAVILION_TO_LEGAL[$pavilionKey] ?? AVS_LEGAL_BETON_SYSTEMS;
     }
 
     public static function getGazeboDataByResourceId($resourceId)
@@ -98,7 +123,8 @@ class AVSBookingModule
                 'PROPERTY_NIGHT_SEASON_START',
                 'PROPERTY_NIGHT_SEASON_END',
                 'PROPERTY_DEPOSIT_AMOUNT',
-                'PROPERTY_MIN_HOURS'
+                'PROPERTY_MIN_HOURS',
+                'PROPERTY_LEGAL_ENTITY'
             ]
         );
 
@@ -113,7 +139,8 @@ class AVSBookingModule
                 'night_season_start' => $element['PROPERTY_NIGHT_SEASON_START_VALUE'],
                 'night_season_end' => $element['PROPERTY_NIGHT_SEASON_END_VALUE'],
                 'deposit_amount' => (float)$element['PROPERTY_DEPOSIT_AMOUNT_VALUE'],
-                'min_hours' => (int)$element['PROPERTY_MIN_HOURS_VALUE'] ?: 4
+                'min_hours' => (int)$element['PROPERTY_MIN_HOURS_VALUE'] ?: 4,
+                'legal_entity' => $element['PROPERTY_LEGAL_ENTITY_VALUE'] ?: self::getLegalEntityByPavilion($element['NAME'])
             ];
         }
 
@@ -290,5 +317,20 @@ class AVSBookingModule
         $notificationService = new AVSNotificationService();
         $notificationService->sendAdminEmail($reference, $bookingData, $depositAmount);
         $notificationService->sendBitrix24Lead($reference, $bookingData, $depositAmount);
+    }
+
+    public static function createOrder($data)
+    {
+        return \AVS\Booking\Order::create($data);
+    }
+
+    public static function updateOrder($orderId, $data)
+    {
+        return \AVS\Booking\Order::update($orderId, $data);
+    }
+
+    public static function extendOrderTime($orderId, $newEndTime)
+    {
+        return \AVS\Booking\Order::extendTime($orderId, $newEndTime);
     }
 }
