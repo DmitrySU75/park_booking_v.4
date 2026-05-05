@@ -1,4 +1,3 @@
-// local/modules/avs_booking/include.php
 <?php
 
 use Bitrix\Main\Loader;
