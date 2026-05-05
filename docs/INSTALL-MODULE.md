@@ -181,3 +181,71 @@ php /путь/до/сайта/bitrix/modules/main/cli/clear_cache.php
 ```bash
 php /путь/до/сайта/bitrix/modules/main/cli/clear_cache.php
 ```
+
+# Устранение неполадок
+| Проблема |	Решение |
+| ---------------- | ----------------------------------------------------------------------------- |
+| Модуль не виден в списке |	Проверьте путь /local/modules/avs_booking/install/index.php и права на файлы |
+| Ошибка 500 при установке |	Включите display_errors в install/index.php, проверьте логи PHP|
+| Форма не отображается |	Проверьте вызов компонента в шаблоне, очистите кэш |
+| Типы аренды не показываются |	Заполните цены в свойствах беседки (PRICE_HOUR, PRICE, PRICE_NIGHT)|
+| Ошибка оплаты 500 |	Проверьте настройки ЮKassa, включите логирование |
+|Заказ не найден при оплате |	Проверьте ID платежной системы в настройках модуля |
+
+## При смене домена
+Обновите URL API в настройках модуля
+Обновите LIBREBOOKING_BASE_URL в /local/php_interface/librebooking_config.php
+Обновите URL вебхука в личном кабинете ЮKassa
+Очистите кэш Битрикс
+
+```bash
+php /путь/до/сайта/bitrix/modules/main/cli/clear_cache.php
+rm /путь/до/сайта/upload/booking_token.json
+```
+
+## Структура файлов после установки
+```bash
+/local/modules/avs_booking/
+├── install/
+│   ├── index.php
+│   └── version.php
+├── admin/
+│   └── avs_booking_price_periods.php
+├── lib/
+│   ├── ApiClient.php
+│   ├── PaymentHandler.php
+│   ├── NotificationService.php
+│   ├── ServicesManager.php
+│   └── Export1C.php
+├── templates/
+│   └── .default/
+│       └── template.php
+├── events/
+│   └── handlers.php
+├── include.php
+├── ajax.php
+├── api_1c.php
+├── webhook_yookassa.php
+├── options.php
+├── README.md
+├── CHANGELOG.md
+├── LICENSE.md
+└── docs/
+    ├── 1C_SETUP.md
+    ├── API.md
+    └── INSTALL-MODULE.md
+```
+
+## Обновление модуля
+
+Сделайте резервную копию файлов и базы данных
+Замените файлы модуля на новую версию
+Перейдите в Настройки → Модули
+Нажмите «Обновить» рядом с модулем avs_booking
+Очистите кэш
+
+## Поддержка
+
+При возникновении проблем:
+Проверьте логи: /upload/payment_debug.log, /upload/api_1c_debug.log
+Обратитесь в поддержку: d.sumenkov@avsgroup.ru
