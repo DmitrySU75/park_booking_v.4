@@ -58,17 +58,36 @@ function createPayment()
 function checkAvailability()
 {
     $resourceId = intval($_REQUEST['resource_id'] ?? 0);
-    $startTime = $_REQUEST['start_time'] ?? '';
-    $endTime = $_REQUEST['end_time'] ?? '';
+    $date = $_REQUEST['date'] ?? '';
+    $rentalType = $_REQUEST['rental_type'] ?? '';
+    $startHour = $_REQUEST['start_hour'] ?? null;
+    $hours = $_REQUEST['hours'] ?? null;
+    $elementId = intval($_REQUEST['element_id'] ?? 0);
 
-    if (!$resourceId || !$startTime || !$endTime) {
+    if (!$resourceId || !$date || !$rentalType) {
         echo json_encode(['success' => false, 'error' => 'Missing parameters']);
         return;
     }
 
     try {
-        $api = AVSBookingModule::getApiClient();
-        $available = $api->checkAvailability($resourceId, $startTime, $endTime);
+        if ($rentalType == 'hourly' && $startHour !== null && $hours !== null) {
+            $timeRange = AVSBookingModule::calculateTimeRange('hourly', $date, $elementId, $startHour, $hours);
+        } elseif ($rentalType == 'full_day') {
+            $timeRange = AVSBookingModule::calculateTimeRange('full_day', $date, $elementId);
+        } elseif ($rentalType == 'night') {
+            $timeRange = AVSBookingModule::calculateTimeRange('night', $date, $elementId);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Invalid rental type']);
+            return;
+        }
+
+        if (!$timeRange) {
+            echo json_encode(['success' => false, 'error' => 'Invalid time range']);
+            return;
+        }
+
+        $available = AVSBookingModule::checkAvailability($resourceId, $timeRange['start'], $timeRange['end']);
+
         echo json_encode(['success' => true, 'available' => $available]);
     } catch (Exception $e) {
         echo json_encode(['success' => false, 'error' => $e->getMessage()]);
@@ -80,6 +99,7 @@ function getPrice()
     $elementId = intval($_REQUEST['element_id'] ?? 0);
     $date = $_REQUEST['date'] ?? '';
     $priceType = $_REQUEST['price_type'] ?? 'hourly';
+    $hours = intval($_REQUEST['hours'] ?? 0);
 
     if (!$elementId || !$date) {
         echo json_encode(['success' => false, 'error' => 'Missing parameters']);
@@ -87,6 +107,11 @@ function getPrice()
     }
 
     $price = AVSBookingModule::getPriceForDate($elementId, $date, $priceType);
+
+    if ($priceType == 'hourly' && $hours > 0) {
+        $price = $price * $hours;
+    }
+
     echo json_encode(['success' => true, 'price' => $price]);
 }
 
