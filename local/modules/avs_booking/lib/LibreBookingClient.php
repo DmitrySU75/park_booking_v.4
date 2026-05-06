@@ -1,5 +1,4 @@
 <?php
-
 class AVSBookingLibreBookingClient
 {
     private $apiUrl;
