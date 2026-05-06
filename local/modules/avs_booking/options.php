@@ -48,21 +48,21 @@ if ($RIGHTS >= 'W') {
             $val = \Bitrix\Main\Config\Option::get($module_id, $name);
             $type = $Option[3];
         ?>
-            <tr>
-                <td width="40%"><?= $Option[1] ?>:</td>
-                <td width="60%">
-                    <input type="<?= $type[0] ?>" name="<?= $name ?>" value="<?= htmlspecialcharsbx($val) ?>" size="<?= $type[1] ?>">
-                </td>
-            </tr>
-        <?
+        <tr>
+            <td width="40%"><?= $Option[1] ?>:</td>
+            <td width="60%">
+                <input type="<?= $type[0] ?>" name="<?= $name ?>" value="<?= htmlspecialcharsbx($val) ?>" size="<?= $type[1] ?>">
+            </td>
+        </tr>
+    <?
         }
         $tabControl->Buttons();
-        ?>
-        <input type="submit" name="save" value="Сохранить">
-        <?
-        $tabControl->End();
-        ?>
+    ?>
+    <input type="submit" name="save" value="Сохранить">
+    <?
+    $tabControl->End();
+    ?>
     </form>
-<?
+    <?php
 }
-?>
+    ?>
