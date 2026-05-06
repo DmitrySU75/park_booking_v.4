@@ -8,9 +8,21 @@ class Order
 {
     public static function create($data)
     {
-        $legalEntity = self::getLegalEntityByPavilion($data['pavilion_id']);
-
+        $legalEntity = \AVSBookingModule::getLegalEntityByPavilion($data['pavilion_name']);
         $orderNumber = self::generateOrderNumber();
+
+        // Расчет цены с учетом тарифов и скидок
+        $priceData = TariffManager::calculatePrice(
+            $data['pavilion_name'],
+            $data['rental_type'],
+            substr($data['start_time'], 0, 10),
+            $data['duration_hours'] ?? null,
+            $data['discount_code'] ?? null
+        );
+
+        if (isset($priceData['error'])) {
+            return false;
+        }
 
         $result = OrderTable::add([
             'ORDER_NUMBER' => $orderNumber,
@@ -20,19 +32,21 @@ class Order
             'CLIENT_NAME' => $data['client_name'],
             'CLIENT_PHONE' => $data['client_phone'],
             'CLIENT_EMAIL' => $data['client_email'] ?? '',
+            'CLIENT_TG_ID' => $data['client_tg_id'] ?? '',
             'START_TIME' => new DateTime($data['start_time']),
             'END_TIME' => new DateTime($data['end_time']),
-            'PRICE' => $data['price'],
-            'STATUS' => $data['status'] ?? 'pending',
+            'PRICE' => $priceData['total_price'],
+            'DEPOSIT_AMOUNT' => $priceData['deposit_amount'],
+            'DISCOUNT_AMOUNT' => $priceData['discount_amount'],
+            'STATUS' => 'pending',
+            'RENTAL_TYPE' => $data['rental_type'],
+            'DURATION_HOURS' => $priceData['duration_hours'],
             'COMMENT' => $data['comment'] ?? '',
-            'LIBREBOOKING_RESERVATION_ID' => $data['librebooking_id'] ?? null,
-            'RENTAL_TYPE' => $data['rental_type'] ?? '',
-            'DURATION_HOURS' => $data['duration_hours'] ?? 0
+            'LIBREBOOKING_RESERVATION_ID' => $data['librebooking_id'] ?? null
         ]);
 
         if ($result->isSuccess()) {
-            $orderId = $result->getId();
-            return $orderId;
+            return $result->getId();
         }
 
         return false;
@@ -41,8 +55,18 @@ class Order
     public static function update($orderId, $data)
     {
         $updateData = [];
-
-        $allowedFields = ['STATUS', 'CLIENT_NAME', 'CLIENT_PHONE', 'CLIENT_EMAIL', 'PRICE', 'COMMENT', 'PAYMENT_STATUS', 'PAID_AMOUNT', 'PAYMENT_ID'];
+        $allowedFields = [
+            'STATUS',
+            'CLIENT_NAME',
+            'CLIENT_PHONE',
+            'CLIENT_EMAIL',
+            'PRICE',
+            'COMMENT',
+            'PAYMENT_STATUS',
+            'PAID_AMOUNT',
+            'PAYMENT_ID',
+            'CLIENT_TG_ID'
+        ];
 
         foreach ($allowedFields as $field) {
             $fieldLower = strtolower($field);
@@ -51,25 +75,13 @@ class Order
             }
         }
 
-        if (isset($data['extended_end_time'])) {
-            $updateData['EXTENDED_END_TIME'] = new DateTime($data['extended_end_time']);
-            $updateData['END_TIME'] = new DateTime($data['extended_end_time']);
-        }
-
         if (isset($data['status'])) {
             $updateData['STATUS'] = $data['status'];
         }
 
-        if (isset($data['payment_status'])) {
-            $updateData['PAYMENT_STATUS'] = $data['payment_status'];
-        }
-
-        if (isset($data['paid_amount'])) {
-            $updateData['PAID_AMOUNT'] = $data['paid_amount'];
-        }
-
-        if (isset($data['payment_id'])) {
-            $updateData['PAYMENT_ID'] = $data['payment_id'];
+        if (isset($data['extended_end_time'])) {
+            $updateData['EXTENDED_END_TIME'] = new DateTime($data['extended_end_time']);
+            $updateData['END_TIME'] = new DateTime($data['extended_end_time']);
         }
 
         $updateData['UPDATED_AT'] = new DateTime();
@@ -79,12 +91,7 @@ class Order
         }
 
         $result = OrderTable::update($orderId, $updateData);
-
-        if ($result->isSuccess()) {
-            return true;
-        }
-
-        return false;
+        return $result->isSuccess();
     }
 
     public static function get($orderId)
@@ -112,12 +119,10 @@ class Order
         ];
 
         $result = OrderTable::getList($params);
-
         $orders = [];
         while ($order = $result->fetch()) {
             $orders[] = $order;
         }
-
         return $orders;
     }
 
@@ -125,7 +130,8 @@ class Order
     {
         $filter = [
             '>=CREATED_AT' => new DateTime($startDate . ' 00:00:00'),
-            '<=CREATED_AT' => new DateTime($endDate . ' 23:59:59')
+            '<=CREATED_AT' => new DateTime($endDate . ' 23:59:59'),
+            'DELETED_AT' => null
         ];
 
         if ($legalEntity) {
@@ -135,44 +141,45 @@ class Order
         return self::getList($filter, 1000, 0);
     }
 
+    public static function softDelete($orderId, $userId = null)
+    {
+        $result = OrderTable::update($orderId, [
+            'DELETED_AT' => new DateTime(),
+            'DELETED_BY' => $userId ?: 0,
+            'STATUS' => 'deleted'
+        ]);
+
+        if ($result->isSuccess()) {
+            self::logAction('delete_order', $orderId, ['deleted_by' => $userId]);
+            return true;
+        }
+        return false;
+    }
+
     public static function extendTime($orderId, $newEndTime)
     {
         $order = self::get($orderId);
-
         if (!$order) {
             return ['success' => false, 'error' => 'Заказ не найден'];
         }
 
-        $workDayEnd = self::getWorkDayEnd($order['PAVILION_NAME']);
-        $workDayEndTime = new \DateTime($workDayEnd);
-        $newEnd = new \DateTime($newEndTime);
-
-        if ($newEnd->format('H:i') > $workDayEndTime->format('H:i')) {
-            return ['success' => false, 'error' => 'Время продления не может быть позже окончания рабочего дня'];
+        $priceData = TariffManager::calculateExtensionPrice($orderId, $newEndTime);
+        if (isset($priceData['error'])) {
+            return $priceData;
         }
-
-        $currentEnd = new \DateTime($order['END_TIME']->toString());
-
-        if ($newEnd <= $currentEnd) {
-            return ['success' => false, 'error' => 'Новое время должно быть позже текущего'];
-        }
-
-        $additionalMinutes = ($newEnd->getTimestamp() - $currentEnd->getTimestamp()) / 60;
-        $originalDuration = self::getDurationInHours($order['START_TIME']->toString(), $order['END_TIME']->toString());
-        $hourlyRate = $order['PRICE'] / $originalDuration;
-        $additionalPrice = ($hourlyRate / 60) * $additionalMinutes;
-        $additionalPrice = round($additionalPrice, 2);
 
         $updateResult = self::update($orderId, [
             'extended_end_time' => $newEndTime,
-            'price' => $order['PRICE'] + $additionalPrice
+            'price' => $priceData['new_total_price']
         ]);
 
         if ($updateResult) {
-            if ($order['LIBREBOOKING_RESERVATION_ID']) {
-                self::updateLibrebookingTime($order['LIBREBOOKING_RESERVATION_ID'], $newEndTime);
-            }
-            return ['success' => true, 'additional_price' => $additionalPrice, 'new_price' => $order['PRICE'] + $additionalPrice];
+            self::logAction('extend_time', $orderId, ['new_end_time' => $newEndTime, 'additional_price' => $priceData['additional_price']]);
+            return [
+                'success' => true,
+                'additional_price' => $priceData['additional_price'],
+                'new_price' => $priceData['new_total_price']
+            ];
         }
 
         return ['success' => false, 'error' => 'Ошибка обновления заказа'];
@@ -180,11 +187,13 @@ class Order
 
     public static function updateStatus($orderId, $status)
     {
+        self::logAction('status_change', $orderId, ['new_status' => $status]);
         return self::update($orderId, ['status' => $status]);
     }
 
     public static function updatePaymentInfo($orderId, $paymentId, $paymentStatus, $paidAmount)
     {
+        self::logAction('payment_update', $orderId, ['payment_id' => $paymentId, 'status' => $paymentStatus]);
         return self::update($orderId, [
             'payment_id' => $paymentId,
             'payment_status' => $paymentStatus,
@@ -195,10 +204,7 @@ class Order
     public static function getPaymentInfo($orderId)
     {
         $order = self::get($orderId);
-
-        if (!$order) {
-            return null;
-        }
+        if (!$order) return null;
 
         return [
             'order_id' => $order['ID'],
@@ -207,14 +213,10 @@ class Order
             'payment_status' => $order['PAYMENT_STATUS'],
             'paid_amount' => $order['PAID_AMOUNT'],
             'price' => $order['PRICE'],
-            'legal_entity' => $order['LEGAL_ENTITY']
+            'deposit_amount' => $order['DEPOSIT_AMOUNT'],
+            'legal_entity' => $order['LEGAL_ENTITY'],
+            'requires_full_payment' => $order['PAID_AMOUNT'] < $order['PRICE']
         ];
-    }
-
-    private static function getLegalEntityByPavilion($pavilionId)
-    {
-        global $AVS_BOOKING_PAVILION_TO_LEGAL;
-        return $AVS_BOOKING_PAVILION_TO_LEGAL[$pavilionId] ?? AVS_LEGAL_BETON_SYSTEMS;
     }
 
     private static function generateOrderNumber()
@@ -222,34 +224,15 @@ class Order
         return 'ORD-' . date('YmdHis') . '-' . rand(1000, 9999);
     }
 
-    private static function getWorkDayEnd($pavilionName)
+    private static function logAction($action, $orderId, $data)
     {
-        $gazebo = \AVSBookingModule::getGazeboDataByName($pavilionName);
-        if ($gazebo) {
-            $date = date('Y-m-d');
-            $endHour = \AVSBookingModule::getWorkEndHour($gazebo['id'], $date);
-            return date('Y-m-d') . ' ' . $endHour . ':00:00';
-        }
-        return date('Y-m-d') . ' 22:00:00';
-    }
-
-    private static function getDurationInHours($start, $end)
-    {
-        $startDate = new \DateTime($start);
-        $endDate = new \DateTime($end);
-        $diff = $startDate->diff($endDate);
-        return $diff->h + ($diff->i / 60);
-    }
-
-    private static function updateLibrebookingTime($reservationId, $newEndTime)
-    {
-        try {
-            $api = \AVSBookingModule::getApiClient();
-            if (method_exists($api, 'updateReservationTime')) {
-                $api->updateReservationTime($reservationId, $newEndTime);
-            }
-        } catch (\Exception $e) {
-            // Log error
-        }
+        global $DB;
+        $DB->Insert('avs_booking_log', [
+            'ACTION' => "'" . $DB->ForSql($action) . "'",
+            'ORDER_ID' => intval($orderId),
+            'MESSAGE' => "'" . $DB->ForSql(json_encode($data, JSON_UNESCAPED_UNICODE)) . "'",
+            'IP_ADDRESS' => "'" . $DB->ForSql($_SERVER['REMOTE_ADDR'] ?? '') . "'",
+            'CREATED_AT' => "'" . date('Y-m-d H:i:s') . "'"
+        ]);
     }
 }

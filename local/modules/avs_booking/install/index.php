@@ -12,22 +12,17 @@ class avs_booking extends CModule
     public $MODULE_ID = 'avs_booking';
     public $MODULE_VERSION;
     public $MODULE_VERSION_DATE;
-    public $MODULE_NAME;
-    public $MODULE_DESCRIPTION;
-    public $PARTNER_NAME;
-    public $PARTNER_URI;
+    public $MODULE_NAME = 'AVS Booking System';
+    public $MODULE_DESCRIPTION = 'Модуль бронирования беседок с поддержкой тарифов, скидок и уведомлений';
+    public $PARTNER_NAME = 'AVS Group';
+    public $PARTNER_URI = 'https://avsgroup.ru';
 
     public function __construct()
     {
         $arModuleVersion = [];
         include(__DIR__ . '/version.php');
-
         $this->MODULE_VERSION = $arModuleVersion['VERSION'];
         $this->MODULE_VERSION_DATE = $arModuleVersion['VERSION_DATE'];
-        $this->MODULE_NAME = 'AVS Booking System';
-        $this->MODULE_DESCRIPTION = 'Модуль бронирования беседок с интеграцией LibreBooking, ЮKassa, 1С и Битрикс24';
-        $this->PARTNER_NAME = 'AVS Group';
-        $this->PARTNER_URI = 'https://avsgroup.ru';
     }
 
     public function DoInstall()
@@ -56,9 +51,7 @@ class avs_booking extends CModule
         $context = \Bitrix\Main\Application::getInstance()->getContext();
         $request = $context->getRequest();
 
-        if ($request['savedata'] == 'Y') {
-            // Сохраняем данные
-        } else {
+        if ($request['savedata'] != 'Y') {
             $this->UnInstallDB();
         }
 
@@ -76,55 +69,32 @@ class avs_booking extends CModule
         global $DB;
 
         $errors = $DB->RunSQLBatch(__DIR__ . '/db/install.sql');
-
         if (!empty($errors)) {
             return $errors;
         }
 
-        // Регистрируем почтовые события
+        // Почтовые события
         $eventTypes = [
-            'AVS_BOOKING_PAYMENT_SUCCESS' => [
-                'LID' => 'ru',
-                'EVENT_TYPE' => 'email',
-                'NAME' => 'Успешная оплата бронирования',
-                'DESCRIPTION' => '#ORDER_NUMBER# - Номер заказа
-#CLIENT_NAME# - Имя клиента
-#PAVILION_NAME# - Название беседки
-#AMOUNT# - Сумма оплаты
-#START_TIME# - Время начала
-#END_TIME# - Время окончания'
-            ],
-            'AVS_BOOKING_ORDER_CREATED' => [
-                'LID' => 'ru',
-                'EVENT_TYPE' => 'email',
+            'AVS_BOOKING_NEW_ORDER' => [
                 'NAME' => 'Новое бронирование',
-                'DESCRIPTION' => '#ORDER_NUMBER# - Номер заказа
-#CLIENT_NAME# - Имя клиента
-#CLIENT_PHONE# - Телефон клиента
-#PAVILION_NAME# - Название беседки
-#START_TIME# - Время начала
-#END_TIME# - Время окончания
-#PRICE# - Стоимость'
+                'DESCRIPTION' => '#ORDER_NUMBER# - Номер заказа<br>#CLIENT_NAME# - Имя клиента<br>#CLIENT_PHONE# - Телефон<br>#PAVILION_NAME# - Беседка<br>#START_TIME# - Начало<br>#END_TIME# - Конец<br>#PRICE# - Сумма'
             ],
-            'AVS_BOOKING_TIME_EXTENDED' => [
-                'LID' => 'ru',
-                'EVENT_TYPE' => 'email',
-                'NAME' => 'Продление времени бронирования',
-                'DESCRIPTION' => '#ORDER_NUMBER# - Номер заказа
-#CLIENT_NAME# - Имя клиента
-#PAVILION_NAME# - Название беседки
-#OLD_END_TIME# - Старое время окончания
-#NEW_END_TIME# - Новое время окончания
-#ADDITIONAL_PRICE# - Доплата'
+            'AVS_BOOKING_PAYMENT_SUCCESS' => [
+                'NAME' => 'Успешная оплата',
+                'DESCRIPTION' => '#ORDER_NUMBER# - Номер заказа<br>#CLIENT_NAME# - Имя клиента<br>#AMOUNT# - Сумма'
+            ],
+            'AVS_BOOKING_REMINDER' => [
+                'NAME' => 'Напоминание о бронировании',
+                'DESCRIPTION' => '#ORDER_NUMBER# - Номер заказа<br>#START_TIME# - Время начала<br>#PAVILION_NAME# - Беседка'
             ]
         ];
 
-        foreach ($eventTypes as $eventName => $eventData) {
+        foreach ($eventTypes as $eventName => $data) {
             \CEventType::Add([
-                'LID' => $eventData['LID'],
+                'LID' => 'ru',
                 'EVENT_NAME' => $eventName,
-                'NAME' => $eventData['NAME'],
-                'DESCRIPTION' => $eventData['DESCRIPTION']
+                'NAME' => $data['NAME'],
+                'DESCRIPTION' => $data['DESCRIPTION']
             ]);
         }
 
@@ -134,16 +104,9 @@ class avs_booking extends CModule
     public function UnInstallDB()
     {
         global $DB;
-
         $DB->RunSQLBatch(__DIR__ . '/db/uninstall.sql');
 
-        // Удаляем почтовые события
-        $eventTypes = [
-            'AVS_BOOKING_PAYMENT_SUCCESS',
-            'AVS_BOOKING_ORDER_CREATED',
-            'AVS_BOOKING_TIME_EXTENDED'
-        ];
-
+        $eventTypes = ['AVS_BOOKING_NEW_ORDER', 'AVS_BOOKING_PAYMENT_SUCCESS', 'AVS_BOOKING_REMINDER'];
         foreach ($eventTypes as $eventName) {
             \CEventType::Delete($eventName);
         }
@@ -154,97 +117,50 @@ class avs_booking extends CModule
     public function InstallEvents()
     {
         $eventManager = EventManager::getInstance();
-
-        $eventManager->registerEventHandler(
-            'avs_booking',
-            'OnAfterOrderCreate',
-            'avs_booking',
-            'AVSBookingEventHandlers',
-            'onAfterOrderCreate'
-        );
-
-        $eventManager->registerEventHandler(
-            'avs_booking',
-            'OnAfterOrderUpdate',
-            'avs_booking',
-            'AVSBookingEventHandlers',
-            'onAfterOrderUpdate'
-        );
-
+        $eventManager->registerEventHandler('avs_booking', 'OnAfterOrderCreate', 'avs_booking', 'AVSBookingEvents', 'onOrderCreate');
+        $eventManager->registerEventHandler('avs_booking', 'OnAfterOrderUpdate', 'avs_booking', 'AVSBookingEvents', 'onOrderUpdate');
         return true;
     }
 
     public function UnInstallEvents()
     {
         $eventManager = EventManager::getInstance();
-
-        $eventManager->unRegisterEventHandler(
-            'avs_booking',
-            'OnAfterOrderCreate',
-            'avs_booking',
-            'AVSBookingEventHandlers',
-            'onAfterOrderCreate'
-        );
-
-        $eventManager->unRegisterEventHandler(
-            'avs_booking',
-            'OnAfterOrderUpdate',
-            'avs_booking',
-            'AVSBookingEventHandlers',
-            'onAfterOrderUpdate'
-        );
-
+        $eventManager->unRegisterEventHandler('avs_booking', 'OnAfterOrderCreate', 'avs_booking', 'AVSBookingEvents', 'onOrderCreate');
+        $eventManager->unRegisterEventHandler('avs_booking', 'OnAfterOrderUpdate', 'avs_booking', 'AVSBookingEvents', 'onOrderUpdate');
         return true;
     }
 
     public function InstallFiles()
     {
-        CopyDirFiles(
-            $_SERVER['DOCUMENT_ROOT'] . '/local/modules/avs_booking/admin',
-            $_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin',
-            true,
-            true
-        );
-
-        CopyDirFiles(
-            $_SERVER['DOCUMENT_ROOT'] . '/local/modules/avs_booking/bitrix/components',
-            $_SERVER['DOCUMENT_ROOT'] . '/bitrix/components',
-            true,
-            true
-        );
-
+        CopyDirFiles(__DIR__ . '/../admin', $_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin', true, true);
+        CopyDirFiles(__DIR__ . '/../bitrix/components', $_SERVER['DOCUMENT_ROOT'] . '/bitrix/components', true, true);
         return true;
     }
 
     public function UnInstallFiles()
     {
-        DeleteDirFiles(
-            $_SERVER['DOCUMENT_ROOT'] . '/local/modules/avs_booking/admin',
-            $_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin'
-        );
-
+        DeleteDirFiles($_SERVER['DOCUMENT_ROOT'] . '/local/modules/avs_booking/admin', $_SERVER['DOCUMENT_ROOT'] . '/bitrix/admin');
         return true;
     }
 
     public function InstallOptions()
     {
-        Option::set($this->MODULE_ID, 'api_url', '');
-        Option::set($this->MODULE_ID, 'api_username', '');
-        Option::set($this->MODULE_ID, 'api_password', '');
         Option::set($this->MODULE_ID, 'api_key', '');
         Option::set($this->MODULE_ID, 'api_allowed_ips', '');
         Option::set($this->MODULE_ID, 'beton_systems_shop_id', '');
         Option::set($this->MODULE_ID, 'beton_systems_secret_key', '');
         Option::set($this->MODULE_ID, 'park_victory_shop_id', '');
         Option::set($this->MODULE_ID, 'park_victory_secret_key', '');
-        Option::set($this->MODULE_ID, 'b24_webhook_url', '');
         Option::set($this->MODULE_ID, 'admin_email', '');
-        Option::set($this->MODULE_ID, 'summer_season_start', '01.06');
-        Option::set($this->MODULE_ID, 'summer_season_end', '31.08');
-        Option::set($this->MODULE_ID, 'summer_end_hour', 23);
-        Option::set($this->MODULE_ID, 'winter_end_hour', 22);
-        Option::set($this->MODULE_ID, 'price_periods_iblock_id', 0);
-
+        Option::set($this->MODULE_ID, 'manager_email', '');
+        Option::set($this->MODULE_ID, 'b24_webhook_url', '');
+        Option::set($this->MODULE_ID, 'tg_bot_token', '');
+        Option::set($this->MODULE_ID, 'summer_period_start', '2024-06-01');
+        Option::set($this->MODULE_ID, 'summer_period_end', '2024-08-31');
+        Option::set($this->MODULE_ID, 'default_deposit', '2000');
+        Option::set($this->MODULE_ID, 'high_deposit_pavilions', 'Теремок,Сибирская');
+        Option::set($this->MODULE_ID, 'high_deposit_amount', '5000');
+        Option::set($this->MODULE_ID, 'min_hours', '4');
         return true;
     }
 
@@ -255,44 +171,24 @@ class avs_booking extends CModule
     }
 }
 
-class AVSBookingEventHandlers
+class AVSBookingEvents
 {
-    public static function onAfterOrderCreate($orderId, $data)
+    public static function onOrderCreate($orderId, $data)
     {
-        // Отправка уведомлений
-        $notificationService = new AVSNotificationService();
+        $notification = new AVSNotificationService();
         $order = \AVS\Booking\Order::get($orderId);
-
         if ($order) {
-            $notificationService->sendAdminEmail($order['ORDER_NUMBER'], $order, $order['PRICE']);
-            $notificationService->sendBitrix24Lead($order['ORDER_NUMBER'], $order, $order['PRICE']);
+            $notification->sendNewOrderNotification($order);
+            $notification->sendClientConfirmation($order);
         }
-
-        // Экспорт в 1С
-        $export1C = new AVSExport1C();
-        $export1C->exportOrder($orderId);
     }
 
-    public static function onAfterOrderUpdate($orderId, $data)
+    public static function onOrderUpdate($orderId, $data)
     {
         if (isset($data['status']) && $data['status'] == 'paid') {
+            $notification = new AVSNotificationService();
             $order = \AVS\Booking\Order::get($orderId);
-            if ($order) {
-                $notificationService = new AVSNotificationService();
-                $notificationService->sendClientPaymentNotification($order);
-            }
+            $notification->sendPaymentSuccessNotification($order);
         }
-
-        if (isset($data['extended_end_time'])) {
-            $order = \AVS\Booking\Order::get($orderId);
-            if ($order) {
-                $notificationService = new AVSNotificationService();
-                $notificationService->sendTimeExtensionNotification($order);
-            }
-        }
-
-        // Экспорт в 1С при изменении статуса
-        $export1C = new AVSExport1C();
-        $export1C->exportOrder($orderId);
     }
 }

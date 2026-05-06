@@ -5,12 +5,10 @@ namespace AVS\Booking;
 class Api
 {
     private $apiKey;
-    private $allowedIps = [];
 
     public function __construct()
     {
         $this->apiKey = \Bitrix\Main\Config\Option::get('avs_booking', 'api_key', '');
-        $this->allowedIps = explode(',', \Bitrix\Main\Config\Option::get('avs_booking', 'api_allowed_ips', ''));
     }
 
     public function handleRequest()
@@ -22,21 +20,27 @@ class Api
             return;
         }
 
-        $method = $_SERVER['REQUEST_METHOD'];
         $action = $_GET['action'] ?? '';
+        $method = $_SERVER['REQUEST_METHOD'];
 
         switch ($action) {
             case 'create_order':
-                $this->createOrder();
+                if ($method === 'POST') $this->createOrder();
                 break;
             case 'update_order':
-                $this->updateOrder();
+                if ($method === 'POST' || $method === 'PUT') $this->updateOrder();
                 break;
             case 'get_orders':
-                $this->getOrders();
+                if ($method === 'GET') $this->getOrders();
                 break;
             case 'get_payment_info':
-                $this->getPaymentInfo();
+                if ($method === 'GET') $this->getPaymentInfo();
+                break;
+            case 'delete_order':
+                if ($method === 'DELETE') $this->deleteOrder();
+                break;
+            case 'get_available_pavilions':
+                if ($method === 'GET') $this->getAvailablePavilions();
                 break;
             default:
                 $this->errorResponse('Action not found', 404);
@@ -47,32 +51,40 @@ class Api
     {
         $data = json_decode(file_get_contents('php://input'), true);
 
-        if (!$this->validateOrderData($data)) {
-            $this->errorResponse('Invalid order data', 400);
+        // Валидация
+        $required = ['pavilion_name', 'client_name', 'client_phone', 'start_time', 'end_time', 'rental_type'];
+        foreach ($required as $field) {
+            if (empty($data[$field])) {
+                $this->errorResponse("Missing field: {$field}", 400);
+                return;
+            }
+        }
+
+        // Проверка ограничений даты
+        $date = substr($data['start_time'], 0, 10);
+        $restrictions = \AVSBookingModule::getDateRestrictions($data['pavilion_name'], $date);
+        if ($restrictions['is_special'] && !in_array($data['rental_type'], $restrictions['allowed_types'])) {
+            $this->errorResponse('Данный тип аренды недоступен в выбранную дату', 400);
             return;
         }
 
-        $orderId = Order::create([
-            'pavilion_id' => $data['pavilion_id'],
-            'pavilion_name' => $data['pavilion_name'],
-            'client_name' => $data['client_name'],
-            'client_phone' => $data['client_phone'],
-            'client_email' => $data['client_email'] ?? '',
-            'start_time' => $data['start_time'],
-            'end_time' => $data['end_time'],
-            'price' => $data['price'],
-            'comment' => $data['comment'] ?? '',
-            'status' => $data['status'] ?? 'pending',
-            'rental_type' => $data['rental_type'] ?? '',
-            'duration_hours' => $data['duration_hours'] ?? 0
-        ]);
+        // Проверка доступности
+        $available = self::checkAvailability($data['pavilion_name'], $data['start_time'], $data['end_time']);
+        if (!$available) {
+            $this->errorResponse('Выбранное время недоступно', 400);
+            return;
+        }
+
+        $orderId = Order::create($data);
 
         if ($orderId) {
             $order = Order::get($orderId);
             $this->successResponse([
                 'order_id' => $orderId,
                 'order_number' => $order['ORDER_NUMBER'],
-                'status' => $order['STATUS']
+                'status' => $order['STATUS'],
+                'price' => $order['PRICE'],
+                'deposit_amount' => $order['DEPOSIT_AMOUNT']
             ]);
         } else {
             $this->errorResponse('Failed to create order', 500);
@@ -83,119 +95,13 @@ class Api
     {
         $data = json_decode(file_get_contents('php://input'), true);
 
-        if (!isset($data['order_id']) && !isset($data['order_number'])) {
-            $this->errorResponse('Order ID or order number required', 400);
-            return;
-        }
-
-        $order = null;
-        if (isset($data['order_id'])) {
-            $order = Order::get($data['order_id']);
-        } else {
-            $order = Order::getByOrderNumber($data['order_number']);
-        }
-
-        if (!$order) {
-            $this->errorResponse('Order not found', 404);
-            return;
-        }
-
-        $updateData = [];
-
-        if (isset($data['status'])) {
-            $updateData['status'] = $data['status'];
-        }
-
-        if (isset($data['client_name'])) {
-            $updateData['client_name'] = $data['client_name'];
-        }
-
-        if (isset($data['client_phone'])) {
-            $updateData['client_phone'] = $data['client_phone'];
-        }
-
-        if (isset($data['client_email'])) {
-            $updateData['client_email'] = $data['client_email'];
-        }
-
-        if (isset($data['price'])) {
-            $updateData['price'] = $data['price'];
-        }
-
-        if (isset($data['comment'])) {
-            $updateData['comment'] = $data['comment'];
-        }
-
-        if (isset($data['payment_status'])) {
-            $updateData['payment_status'] = $data['payment_status'];
-        }
-
-        if (Order::update($order['ID'], $updateData)) {
-            $updatedOrder = Order::get($order['ID']);
-            $this->successResponse([
-                'order_id' => $updatedOrder['ID'],
-                'order_number' => $updatedOrder['ORDER_NUMBER'],
-                'status' => $updatedOrder['STATUS'],
-                'updated_fields' => array_keys($updateData)
-            ]);
-        } else {
-            $this->errorResponse('Failed to update order', 500);
-        }
-    }
-
-    private function getOrders()
-    {
-        $startDate = $_GET['start_date'] ?? '';
-        $endDate = $_GET['end_date'] ?? '';
-        $legalEntity = $_GET['legal_entity'] ?? '';
-
-        if (!$startDate || !$endDate) {
-            $this->errorResponse('start_date and end_date required', 400);
-            return;
-        }
-
-        $orders = Order::getListByPeriod($startDate, $endDate, $legalEntity);
-
-        $result = [];
-        foreach ($orders as $order) {
-            $result[] = [
-                'id' => $order['ID'],
-                'order_number' => $order['ORDER_NUMBER'],
-                'pavilion_id' => $order['PAVILION_ID'],
-                'pavilion_name' => $order['PAVILION_NAME'],
-                'legal_entity' => $order['LEGAL_ENTITY'],
-                'client_name' => $order['CLIENT_NAME'],
-                'client_phone' => $order['CLIENT_PHONE'],
-                'client_email' => $order['CLIENT_EMAIL'],
-                'start_time' => $order['START_TIME']->toString(),
-                'end_time' => $order['END_TIME']->toString(),
-                'price' => $order['PRICE'],
-                'status' => $order['STATUS'],
-                'payment_status' => $order['PAYMENT_STATUS'],
-                'paid_amount' => $order['PAID_AMOUNT'],
-                'created_at' => $order['CREATED_AT']->toString(),
-                'rental_type' => $order['RENTAL_TYPE'],
-                'duration_hours' => $order['DURATION_HOURS']
-            ];
-        }
-
-        $this->successResponse(['orders' => $result, 'total' => count($result)]);
-    }
-
-    private function getPaymentInfo()
-    {
-        $orderId = $_GET['order_id'] ?? null;
-        $orderNumber = $_GET['order_number'] ?? null;
-
-        if (!$orderId && !$orderNumber) {
-            $this->errorResponse('order_id or order_number required', 400);
-            return;
-        }
+        $orderId = $data['order_id'] ?? 0;
+        $orderNumber = $data['order_number'] ?? '';
 
         $order = null;
         if ($orderId) {
             $order = Order::get($orderId);
-        } else {
+        } elseif ($orderNumber) {
             $order = Order::getByOrderNumber($orderNumber);
         }
 
@@ -204,38 +110,148 @@ class Api
             return;
         }
 
-        $paymentInfo = Order::getPaymentInfo($order['ID']);
-        $this->successResponse($paymentInfo);
-    }
-
-    private function validateOrderData($data)
-    {
-        $required = ['pavilion_id', 'pavilion_name', 'client_name', 'client_phone', 'start_time', 'end_time', 'price'];
-
-        foreach ($required as $field) {
-            if (!isset($data[$field]) || empty($data[$field])) {
-                return false;
+        $updateData = [];
+        $allowed = ['status', 'client_name', 'client_phone', 'client_email', 'price', 'comment'];
+        foreach ($allowed as $field) {
+            if (isset($data[$field])) {
+                $updateData[$field] = $data[$field];
             }
         }
 
-        return true;
+        if (Order::update($order['ID'], $updateData)) {
+            $this->successResponse(['updated' => true, 'order_id' => $order['ID']]);
+        } else {
+            $this->errorResponse('Update failed', 500);
+        }
+    }
+
+    private function getOrders()
+    {
+        $startDate = $_GET['start_date'] ?? date('Y-m-d', strtotime('-30 days'));
+        $endDate = $_GET['end_date'] ?? date('Y-m-d');
+        $legalEntity = $_GET['legal_entity'] ?? '';
+        $status = $_GET['status'] ?? '';
+
+        $orders = Order::getListByPeriod($startDate, $endDate, $legalEntity);
+
+        if ($status) {
+            $orders = array_filter($orders, function ($o) use ($status) {
+                return $o['STATUS'] === $status;
+            });
+        }
+
+        $result = [];
+        foreach ($orders as $order) {
+            $result[] = [
+                'id' => $order['ID'],
+                'order_number' => $order['ORDER_NUMBER'],
+                'pavilion_name' => $order['PAVILION_NAME'],
+                'legal_entity' => $order['LEGAL_ENTITY'],
+                'client_name' => $order['CLIENT_NAME'],
+                'client_phone' => $order['CLIENT_PHONE'],
+                'client_email' => $order['CLIENT_EMAIL'],
+                'start_time' => $order['START_TIME']->toString(),
+                'end_time' => $order['END_TIME']->toString(),
+                'price' => $order['PRICE'],
+                'deposit_amount' => $order['DEPOSIT_AMOUNT'],
+                'paid_amount' => $order['PAID_AMOUNT'],
+                'status' => $order['STATUS'],
+                'payment_status' => $order['PAYMENT_STATUS'],
+                'rental_type' => $order['RENTAL_TYPE'],
+                'created_at' => $order['CREATED_AT']->toString()
+            ];
+        }
+
+        $this->successResponse(['orders' => $result, 'total' => count($result)]);
+    }
+
+    private function getPaymentInfo()
+    {
+        $orderId = $_GET['order_id'] ?? 0;
+        $orderNumber = $_GET['order_number'] ?? '';
+
+        $order = null;
+        if ($orderId) {
+            $order = Order::get($orderId);
+        } elseif ($orderNumber) {
+            $order = Order::getByOrderNumber($orderNumber);
+        }
+
+        if (!$order) {
+            $this->errorResponse('Order not found', 404);
+            return;
+        }
+
+        $this->successResponse(Order::getPaymentInfo($order['ID']));
+    }
+
+    private function deleteOrder()
+    {
+        $data = json_decode(file_get_contents('php://input'), true);
+        $orderId = $data['order_id'] ?? 0;
+
+        if (!$orderId) {
+            $this->errorResponse('order_id required', 400);
+            return;
+        }
+
+        if (Order::softDelete($orderId)) {
+            $this->successResponse(['deleted' => true]);
+        } else {
+            $this->errorResponse('Delete failed', 500);
+        }
+    }
+
+    private function getAvailablePavilions()
+    {
+        $date = $_GET['date'] ?? date('Y-m-d');
+
+        if (!\Bitrix\Main\Loader::includeModule('iblock')) {
+            $this->errorResponse('IBlock module not loaded', 500);
+            return;
+        }
+
+        $res = \CIBlockElement::GetList(
+            ['NAME' => 'ASC'],
+            ['IBLOCK_ID' => 12, 'ACTIVE' => 'Y'],
+            false,
+            false,
+            ['ID', 'NAME']
+        );
+
+        $pavilions = [];
+        while ($el = $res->Fetch()) {
+            $types = \AVSBookingModule::getAvailableRentalTypes($el['NAME'], $date);
+            if (!empty($types)) {
+                $pavilions[] = [
+                    'id' => $el['ID'],
+                    'name' => $el['NAME'],
+                    'available_types' => array_keys($types)
+                ];
+            }
+        }
+
+        $this->successResponse(['pavilions' => $pavilions, 'date' => $date]);
+    }
+
+    private function checkAvailability($pavilionName, $startTime, $endTime)
+    {
+        $gazebo = \AVSBookingModule::getGazeboDataByName($pavilionName);
+        if (!$gazebo || !$gazebo['resource_id']) return false;
+
+        try {
+            $client = new LibreBookingClient();
+            return $client->checkAvailability($gazebo['resource_id'], $startTime, $endTime);
+        } catch (\Exception $e) {
+            return false;
+        }
     }
 
     private function checkAuth()
     {
         $headers = getallheaders();
         $apiKey = $headers['X-API-Key'] ?? '';
-
-        if ($apiKey !== $this->apiKey) {
-            return false;
-        }
-
-        $clientIp = $_SERVER['REMOTE_ADDR'];
-        if (!empty($this->allowedIps) && $this->allowedIps[0] !== '' && !in_array($clientIp, $this->allowedIps)) {
-            return false;
-        }
-
-        return true;
+        return $apiKey === $this->apiKey;
     }
 
     private function successResponse($data)
