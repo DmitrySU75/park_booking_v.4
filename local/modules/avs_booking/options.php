@@ -1,197 +1,139 @@
 <?php
-
-use Bitrix\Main\Config\Option;
-
 $module_id = 'avs_booking';
+$RIGHTS = $APPLICATION->GetGroupRight($module_id);
 
-$RIGHT = $APPLICATION->GetGroupRight($module_id);
-if ($RIGHT < 'R') {
-    $APPLICATION->AuthForm('Доступ запрещён');
-}
+if ($RIGHTS >= 'W') {
+    $arAllOptions = [
+        ['api_key', 'API ключ для внешних запросов', '', ['text', 50]],
+        ['api_allowed_ips', 'Разрешенные IP для API (через запятую)', '', ['text', 255]],
+        ['beton_systems_shop_id', 'Shop ID (ЮKassa) - Бетонные Системы', '', ['text', 50]],
+        ['beton_systems_secret_key', 'Secret key (ЮKassa) - Бетонные Системы', '', ['password', 50]],
+        ['park_victory_shop_id', 'Shop ID (ЮKassa) - Парк Победы', '', ['text', 50]],
+        ['park_victory_secret_key', 'Secret key (ЮKassa) - Парк Победы', '', ['password', 50]],
+        ['admin_email', 'Email администратора', '', ['text', 100]],
+        ['manager_email', 'Email менеджера', '', ['text', 100]],
+        ['b24_webhook_url', 'Webhook Битрикс24', '', ['text', 255]],
+        ['tg_bot_token', 'Telegram Bot Token', '', ['text', 100]],
+        ['tg_manager_chat_id', 'Telegram Chat ID менеджера', '', ['text', 50]],
+        ['summer_period_start', 'Начало летнего периода (YYYY-MM-DD)', date('Y') . '-06-01', ['text', 20]],
+        ['summer_period_end', 'Конец летнего периода (YYYY-MM-DD)', date('Y') . '-08-31', ['text', 20]],
+        ['default_deposit', 'Сумма аванса по умолчанию (руб)', '2000', ['text', 10]],
+        ['high_deposit_pavilions', 'Беседки с повышенным авансом (через запятую)', 'Теремок,Сибирская', ['text', 255]],
+        ['high_deposit_amount', 'Сумма повышенного аванса (руб)', '5000', ['text', 10]],
+        ['min_hours', 'Минимальное количество часов аренды', '4', ['text', 5]],
+        ['weekend_restriction', 'Ограничение в выходные дни', 'no', ['selectbox', ['no' => 'Нет', 'full_day_only' => 'Только полный день']]],
+        ['weekend_price_modifier', 'Модификатор цены в выходные', '1.2', ['text', 10]],
+        ['holiday_dates', 'Праздничные даты (YYYY-MM-DD, через запятую)', '', ['textarea', 5]]
+    ];
 
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && $RIGHT >= 'W' && check_bitrix_sessid()) {
-    Option::set($module_id, 'api_url', $_POST['api_url']);
-    Option::set($module_id, 'api_username', $_POST['api_username']);
-    Option::set($module_id, 'api_password', $_POST['api_password']);
-    Option::set($module_id, 'default_schedule_id', $_POST['default_schedule_id']);
-    Option::set($module_id, 'timezone_offset', $_POST['timezone_offset']);
-    Option::set($module_id, 'default_deposit_amount', $_POST['default_deposit_amount']);
-    Option::set($module_id, 'service_product_id', $_POST['service_product_id']);
-    Option::set($module_id, 'yookassa_paysystem_id', $_POST['yookassa_paysystem_id']);
-    Option::set($module_id, 'admin_email', $_POST['admin_email']);
-    Option::set($module_id, 'bitrix24_webhook', $_POST['bitrix24_webhook']);
-    Option::set($module_id, 'export_1c_url', $_POST['export_1c_url']);
-    Option::set($module_id, 'export_1c_key', $_POST['export_1c_key']);
-    Option::set($module_id, 'summer_season_start', $_POST['summer_season_start']);
-    Option::set($module_id, 'summer_season_end', $_POST['summer_season_end']);
-    Option::set($module_id, 'winter_end_hour', $_POST['winter_end_hour']);
-    Option::set($module_id, 'summer_end_hour', $_POST['summer_end_hour']);
-
-    if (isset($_POST['api_1c_key']) && !empty($_POST['api_1c_key'])) {
-        Option::set($module_id, 'api_1c_key', $_POST['api_1c_key']);
+    if ($_SERVER['REQUEST_METHOD'] == 'POST' && check_bitrix_sessid()) {
+        foreach ($arAllOptions as $option) {
+            $name = $option[0];
+            $value = $_REQUEST[$name];
+            \Bitrix\Main\Config\Option::set($module_id, $name, $value);
+        }
     }
 
-    CAdminMessage::ShowMessage([
-        'MESSAGE' => 'Настройки сохранены',
-        'TYPE' => 'OK'
+    $tabControl = new CAdminTabControl('tabControl', [
+        ['DIV' => 'edit1', 'TAB' => 'Основные настройки', 'TITLE' => 'Основные настройки модуля'],
+        ['DIV' => 'edit2', 'TAB' => 'API и интеграции', 'TITLE' => 'Настройки API и интеграций'],
+        ['DIV' => 'edit3', 'TAB' => 'Уведомления', 'TITLE' => 'Настройки уведомлений'],
+        ['DIV' => 'edit4', 'TAB' => 'Тарифы и цены', 'TITLE' => 'Настройки тарифов']
     ]);
-}
 
-$APPLICATION->SetTitle('Настройки модуля бронирования AVS');
-
-$aTabs = [
-    [
-        'DIV' => 'edit1',
-        'TAB' => 'API LibreBooking',
-        'TITLE' => 'Настройки подключения к LibreBooking',
-    ],
-    [
-        'DIV' => 'edit2',
-        'TAB' => 'Оплата',
-        'TITLE' => 'Настройки оплаты',
-    ],
-    [
-        'DIV' => 'edit3',
-        'TAB' => 'Уведомления',
-        'TITLE' => 'Настройки уведомлений',
-    ],
-    [
-        'DIV' => 'edit4',
-        'TAB' => 'API для 1С',
-        'TITLE' => 'Настройки интеграции с 1С',
-    ],
-    [
-        'DIV' => 'edit5',
-        'TAB' => '1С (Экспорт)',
-        'TITLE' => 'Настройки экспорта бронирований в 1С',
-    ],
-    [
-        'DIV' => 'edit6',
-        'TAB' => 'Сезонные настройки',
-        'TITLE' => 'Настройка летнего и зимнего сезонов',
-    ],
-    [
-        'DIV' => 'edit7',
-        'TAB' => 'Настройки заказа',
-        'TITLE' => 'Настройки для создания заказа',
-    ],
-];
-
-$tabControl = new CAdminTabControl('tabControl', $aTabs);
 ?>
+    <form method="post" action="<? echo $APPLICATION->GetCurPage() ?>?mid=<?= htmlspecialcharsbx($module_id) ?>&lang=<? echo LANGUAGE_ID ?>">
+        <?= bitrix_sessid_post() ?>
+        <?
+        $tabControl->Begin();
 
-<form method="post">
-    <?= bitrix_sessid_post() ?>
-    <? $tabControl->Begin(); ?>
+        $tabControl->BeginNextTab();
+        foreach (array_slice($arAllOptions, 0, 2) as $Option) {
+            $name = $Option[0];
+            $val = \Bitrix\Main\Config\Option::get($module_id, $name);
+            $type = $Option[3];
+        ?>
+            <tr>
+                <td width="40%"><?= $Option[1] ?>:</td>
+                <td width="60%">
+                    <input type="<?= $type[0] ?>" name="<?= $name ?>" value="<?= htmlspecialcharsbx($val) ?>" size="<?= $type[1] ?>">
+                </td>
+            </tr>
+        <?
+        }
 
-    <? $tabControl->BeginNextTab(); ?>
-    <tr class="heading">
-        <td colspan="2">Подключение к LibreBooking API</td>
-    </tr>
-    <tr>
-        <td width="40%">URL API:</td>
-        <td width="60%"><input type="text" name="api_url" value="<?= htmlspecialchars(Option::get($module_id, 'api_url')) ?>" size="60"></td>
-    </tr>
-    <tr>
-        <td>Логин API:</td>
-        <td><input type="text" name="api_username" value="<?= htmlspecialchars(Option::get($module_id, 'api_username')) ?>" size="40">
-        <td>
-    </tr>
-    <tr>
-        <td>Пароль API:</td>
-        <td><input type="password" name="api_password" value="<?= htmlspecialchars(Option::get($module_id, 'api_password')) ?>" size="40" autocomplete="off"></td>
-    </tr>
-    <tr>
-        <td>ID расписания по умолчанию:</td>
-        <td><input type="text" name="default_schedule_id" value="<?= htmlspecialchars(Option::get($module_id, 'default_schedule_id', '2')) ?>" size="10"></td>
-    </tr>
-    <tr>
-        <td>Часовой пояс:</td>
-        <td><input type="text" name="timezone_offset" value="<?= htmlspecialchars(Option::get($module_id, 'timezone_offset', '+05:00')) ?>" size="10"></td>
-    </tr>
+        $tabControl->BeginNextTab();
+        foreach (array_slice($arAllOptions, 2, 6) as $Option) {
+            $name = $Option[0];
+            $val = \Bitrix\Main\Config\Option::get($module_id, $name);
+            $type = $Option[3];
+        ?>
+            <tr>
+                <td width="40%"><?= $Option[1] ?>:</td>
+                <td width="60%">
+                    <? if ($type[0] == 'selectbox'): ?>
+                        <select name="<?= $name ?>">
+                            <? foreach ($type[1] as $key => $label): ?>
+                                <option value="<?= $key ?>" <?= $val == $key ? 'selected' : '' ?>><?= $label ?></option>
+                            <? endforeach; ?>
+                        </select>
+                    <? elseif ($type[0] == 'textarea'): ?>
+                        <textarea name="<?= $name ?>" rows="3" cols="50"><?= htmlspecialcharsbx($val) ?></textarea>
+                    <? else: ?>
+                        <input type="<?= $type[0] ?>" name="<?= $name ?>" value="<?= htmlspecialcharsbx($val) ?>" size="<?= $type[1] ?>">
+                    <? endif; ?>
+                </td>
+            </tr>
+        <?
+        }
 
-    <? $tabControl->BeginNextTab(); ?>
-    <tr class="heading">
-        <td colspan="2">Настройки оплаты</td>
-    </tr>
-    <tr>
-        <td width="40%">Сумма предоплаты по умолчанию (₽):</td>
-        <td width="60%"><input type="text" name="default_deposit_amount" value="<?= htmlspecialchars(Option::get($module_id, 'default_deposit_amount', '0')) ?>" size="10"></td>
-    </tr>
+        $tabControl->BeginNextTab();
+        foreach (array_slice($arAllOptions, 8, 3) as $Option) {
+            $name = $Option[0];
+            $val = \Bitrix\Main\Config\Option::get($module_id, $name);
+            $type = $Option[3];
+        ?>
+            <tr>
+                <td width="40%"><?= $Option[1] ?>:</td>
+                <td width="60%">
+                    <input type="<?= $type[0] ?>" name="<?= $name ?>" value="<?= htmlspecialcharsbx($val) ?>" size="<?= $type[1] ?>">
+                </td>
+            </tr>
+        <?
+        }
 
-    <? $tabControl->BeginNextTab(); ?>
-    <tr class="heading">
-        <td colspan="2">Email и CRM уведомления</td>
-    </tr>
-    <tr>
-        <td width="40%">Email администратора:</td>
-        <td width="60%"><input type="text" name="admin_email" value="<?= htmlspecialchars(Option::get($module_id, 'admin_email')) ?>" size="40"></td>
-    </tr>
-    <tr>
-        <td width="40%">Webhook Битрикс24:</td>
-        <td width="60%"><input type="text" name="bitrix24_webhook" value="<?= htmlspecialchars(Option::get($module_id, 'bitrix24_webhook')) ?>" size="60"></td>
-    </tr>
+        $tabControl->BeginNextTab();
+        foreach (array_slice($arAllOptions, 11) as $Option) {
+            $name = $Option[0];
+            $val = \Bitrix\Main\Config\Option::get($module_id, $name);
+            $type = $Option[3];
+        ?>
+            <tr>
+                <td width="40%"><?= $Option[1] ?>:</td>
+                <td width="60%">
+                    <? if ($type[0] == 'selectbox'): ?>
+                        <select name="<?= $name ?>">
+                            <? foreach ($type[1] as $key => $label): ?>
+                                <option value="<?= $key ?>" <?= $val == $key ? 'selected' : '' ?>><?= $label ?></option>
+                            <? endforeach; ?>
+                        </select>
+                    <? elseif ($type[0] == 'textarea'): ?>
+                        <textarea name="<?= $name ?>" rows="3" cols="50"><?= htmlspecialcharsbx($val) ?></textarea>
+                    <? else: ?>
+                        <input type="<?= $type[0] ?>" name="<?= $name ?>" value="<?= htmlspecialcharsbx($val) ?>" size="<?= $type[1] ?>">
+                    <? endif; ?>
+                </td>
+            </tr>
+        <?
+        }
 
-    <? $tabControl->BeginNextTab(); ?>
-    <tr class="heading">
-        <td colspan="2">Настройки для интеграции с 1С (приём бронирований)</td>
-    </tr>
-    <tr>
-        <td width="40%">API-ключ для 1С:</td>
-        <td width="60%"><input type="text" name="api_1c_key" value="<?= htmlspecialchars(Option::get($module_id, 'api_1c_key')) ?>" size="40"><br><small>Используйте этот ключ в заголовке X-API-KEY при запросах из 1С</small></td>
-    </tr>
-
-    <? $tabControl->BeginNextTab(); ?>
-    <tr class="heading">
-        <td colspan="2">Настройки отправки бронирований в 1С (экспорт)</td>
-    </tr>
-    <tr>
-        <td width="40%">URL API 1С:</td>
-        <td width="60%"><input type="text" name="export_1c_url" value="<?= htmlspecialchars(Option::get($module_id, 'export_1c_url')) ?>" size="60"><br><small>Адрес эндпоинта 1С для приёма бронирований</small></td>
-    </tr>
-    <tr>
-        <td>API-ключ для экспорта:</td>
-        <td><input type="text" name="export_1c_key" value="<?= htmlspecialchars(Option::get($module_id, 'export_1c_key')) ?>" size="40"><br><small>Секретный ключ для авторизации в 1С</small></td>
-    </tr>
-
-    <? $tabControl->BeginNextTab(); ?>
-    <tr class="heading">
-        <td colspan="2">Настройка летнего и зимнего сезонов</td>
-    </tr>
-    <tr>
-        <td width="40%">Начало летнего сезона:</td>
-        <td width="60%"><input type="text" name="summer_season_start" value="<?= htmlspecialchars(Option::get($module_id, 'summer_season_start', '01.06')) ?>" size="10"><br><small>Формат: ДД.ММ</small></td>
-    </tr>
-    <tr>
-        <td width="40%">Конец летнего сезона:</td>
-        <td width="60%"><input type="text" name="summer_season_end" value="<?= htmlspecialchars(Option::get($module_id, 'summer_season_end', '31.08')) ?>" size="10"><br><small>Формат: ДД.ММ</small></td>
-    </tr>
-    <tr>
-        <td width="40%">Зимнее время окончания работы:</td>
-        <td width="60%"><input type="text" name="winter_end_hour" value="<?= htmlspecialchars(Option::get($module_id, 'winter_end_hour', '22')) ?>" size="5"></td>
-    </tr>
-    <tr>
-        <td width="40%">Летнее время окончания работы:</td>
-        <td width="60%"><input type="text" name="summer_end_hour" value="<?= htmlspecialchars(Option::get($module_id, 'summer_end_hour', '23')) ?>" size="5"></td>
-    </tr>
-
-    <? $tabControl->BeginNextTab(); ?>
-    <tr class="heading">
-        <td colspan="2">Настройки для создания заказа</td>
-    </tr>
-    <tr>
-        <td width="40%">ID товара "Аренда беседки":</td>
-        <td width="60%"><input type="text" name="service_product_id" value="<?= htmlspecialchars(Option::get($module_id, 'service_product_id', '0')) ?>" size="10"><br><small>ID товара в каталоге для услуги аренды</small></td>
-    </tr>
-    <tr>
-        <td width="40%">ID платежной системы ЮKassa:</td>
-        <td width="60%"><input type="text" name="yookassa_paysystem_id" value="<?= htmlspecialchars(Option::get($module_id, 'yookassa_paysystem_id', '0')) ?>" size="10"><br><small>ID из списка платежных систем Битрикс</small></td>
-    </tr>
-
-    <? $tabControl->Buttons(); ?>
-    <input type="submit" name="save" value="Сохранить" class="adm-btn-save">
-    <? $tabControl->End(); ?>
-</form>
-
-<br>
-<a href="/bitrix/admin/avs_booking_price_periods.php" class="adm-btn">Управление ценовыми периодами</a>
+        $tabControl->Buttons();
+        ?>
+        <input type="submit" name="save" value="Сохранить">
+        <?
+        $tabControl->End();
+        ?>
+    </form>
+<?
+}
+?>

@@ -1,62 +1,43 @@
 <?php
-require_once $_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php';
-require_once __DIR__ . '/include.php';
+require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php');
 
-$logFile = $_SERVER['DOCUMENT_ROOT'] . '/upload/payment_debug.log';
+use AVS\Booking\Payment;
 
-function writeLog($message)
-{
-    global $logFile;
-    file_put_contents($logFile, date('[Y-m-d H:i:s]') . ' [webhook] ' . $message . PHP_EOL, FILE_APPEND);
-}
+CModule::IncludeModule('avs_booking');
 
-writeLog('========== ВЕБХУК ВЫЗВАН ==========');
+$allowedIps = ['185.71.76.0/27', '185.71.77.0/27', '77.75.153.0/25', '77.75.154.0/25', '77.75.156.0/25', '77.75.157.0/25'];
+$clientIp = $_SERVER['REMOTE_ADDR'];
 
-$source = file_get_contents('php://input');
-writeLog('Тело запроса: ' . $source);
-
-$data = json_decode($source, true);
-
-if (!isset($data['event']) || $data['event'] !== 'payment.succeeded') {
-    writeLog('Не тот тип события или событие не оплата');
-    http_response_code(200);
-    echo 'OK';
-    exit;
-}
-
-$paymentId = $data['object']['id'];
-writeLog("Платёж оплачен: $paymentId");
-
-session_start();
-
-if (isset($_SESSION['yookassa_payment']) && $_SESSION['yookassa_payment']['payment_id'] === $paymentId) {
-    $bookingData = $_SESSION['yookassa_payment']['booking_data'];
-    writeLog("Данные бронирования найдены: " . print_r($bookingData, true));
-
-    $result = AVSBookingModule::createBooking(
-        $bookingData['resource_id'],
-        $bookingData['start_time'],
-        $bookingData['end_time'],
-        $bookingData['user_data']
-    );
-
-    if (isset($result['referenceNumber'])) {
-        writeLog("Бронирование создано: {$result['referenceNumber']}");
-
-        AVSBookingModule::sendNotifications(
-            $result['referenceNumber'],
-            $bookingData,
-            $bookingData['deposit_amount']
-        );
-
-        unset($_SESSION['yookassa_payment']);
-        writeLog("Сессия очищена");
-    } else {
-        writeLog("ОШИБКА: Бронирование не создано");
+$ipValid = false;
+foreach ($allowedIps as $ipRange) {
+    if (ipInRange($clientIp, $ipRange)) {
+        $ipValid = true;
+        break;
     }
-} else {
-    writeLog("Данные бронирования не найдены в сессии");
 }
 
-http_response_code(200);
+if (!$ipValid) {
+    http_response_code(403);
+    die('Forbidden');
+}
+
+Payment::handleWebhook();
+
 echo 'OK';
+
+function ipInRange($ip, $range)
+{
+    if (strpos($range, '/') === false) {
+        return $ip === $range;
+    }
+
+    list($range, $netmask) = explode('/', $range, 2);
+    $rangeDecimal = ip2long($range);
+    $ipDecimal = ip2long($ip);
+    $wildcardDecimal = pow(2, (32 - $netmask)) - 1;
+    $netmaskDecimal = ~$wildcardDecimal;
+
+    return ($ipDecimal & $netmaskDecimal) == ($rangeDecimal & $netmaskDecimal);
+}
+
+require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_after.php');

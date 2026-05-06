@@ -23,7 +23,7 @@ class OrderTable extends Entity\DataManager
                 'required' => true,
                 'unique' => true
             ]),
-            new Entity\IntegerField('PAVILION_ID', [
+            new Entity\StringField('PAVILION_ID', [
                 'required' => true
             ]),
             new Entity\StringField('PAVILION_NAME'),
@@ -37,6 +37,7 @@ class OrderTable extends Entity\DataManager
                 'required' => true
             ]),
             new Entity\StringField('CLIENT_EMAIL'),
+            new Entity\StringField('CLIENT_TG_ID'),
             new Entity\DatetimeField('START_TIME', [
                 'required' => true
             ]),
@@ -47,6 +48,11 @@ class OrderTable extends Entity\DataManager
             new Entity\FloatField('PRICE', [
                 'required' => true
             ]),
+            new Entity\FloatField('DEPOSIT_AMOUNT', [
+                'required' => true
+            ]),
+            new Entity\FloatField('DISCOUNT_AMOUNT'),
+            new Entity\StringField('DISCOUNT_CODE'),
             new Entity\StringField('STATUS', [
                 'required' => true,
                 'default_value' => 'pending'
@@ -59,6 +65,8 @@ class OrderTable extends Entity\DataManager
                 'default_value' => 0
             ]),
             new Entity\StringField('LIBREBOOKING_RESERVATION_ID'),
+            new Entity\StringField('RENTAL_TYPE'),
+            new Entity\IntegerField('DURATION_HOURS'),
             new Entity\TextField('COMMENT'),
             new Entity\DatetimeField('CREATED_AT', [
                 'default_value' => new Type\DateTime()
@@ -66,8 +74,8 @@ class OrderTable extends Entity\DataManager
             new Entity\DatetimeField('UPDATED_AT', [
                 'default_value' => new Type\DateTime()
             ]),
-            new Entity\StringField('RENTAL_TYPE'),
-            new Entity\IntegerField('DURATION_HOURS')
+            new Entity\DatetimeField('DELETED_AT'),
+            new Entity\IntegerField('DELETED_BY')
         ];
     }
 }

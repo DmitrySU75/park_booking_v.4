@@ -3,53 +3,38 @@
 use Bitrix\Main\Loader;
 use Bitrix\Main\Config\Option;
 
-require_once __DIR__ . '/lib/ApiClient.php';
-require_once __DIR__ . '/lib/PaymentHandler.php';
-require_once __DIR__ . '/lib/NotificationService.php';
-require_once __DIR__ . '/lib/ServicesManager.php';
-require_once __DIR__ . '/lib/Export1C.php';
 require_once __DIR__ . '/lib/OrderTable.php';
 require_once __DIR__ . '/lib/Order.php';
 require_once __DIR__ . '/lib/Api.php';
+require_once __DIR__ . '/lib/Payment.php';
+require_once __DIR__ . '/lib/TariffManager.php';
+require_once __DIR__ . '/lib/NotificationService.php';
+require_once __DIR__ . '/lib/DiscountManager.php';
+require_once __DIR__ . '/lib/LibreBookingClient.php';
+require_once __DIR__ . '/lib/YookassaHandler.php';
+require_once __DIR__ . '/lib/OneCIntegration.php';
 
-// Константы юридических лиц
 define('AVS_LEGAL_BETON_SYSTEMS', 'beton_systems');
 define('AVS_LEGAL_PARK_VICTORY', 'park_victory');
 
-// Маппинг беседок к юр.лицам
+// Маппинг ID беседок к юридическим лицам
 $GLOBALS['AVS_BOOKING_PAVILION_TO_LEGAL'] = [
-    'shatrash' => AVS_LEGAL_BETON_SYSTEMS,
-    'chemodanchik' => AVS_LEGAL_BETON_SYSTEMS,
-    'victory_park' => AVS_LEGAL_PARK_VICTORY,
-    'victory_lake' => AVS_LEGAL_PARK_VICTORY,
+    1 => AVS_LEGAL_BETON_SYSTEMS,      // Шарташ
+    2 => AVS_LEGAL_BETON_SYSTEMS,      // Чемоданчик
+    3 => AVS_LEGAL_PARK_VICTORY,       // Виктори парк
+    4 => AVS_LEGAL_PARK_VICTORY,       // Виктори Озеро
 ];
+
+// Беседки с повышенным авансом (ID)
+$GLOBALS['AVS_BOOKING_HIGH_DEPOSIT'] = [5, 6]; // Теремок, Сибирская
 
 class AVSBookingModule
 {
-    private static $apiClient = null;
     private static $moduleId = 'avs_booking';
-
-    public static function getApiClient()
-    {
-        if (self::$apiClient === null) {
-            $apiUrl = Option::get(self::$moduleId, 'api_url');
-            $username = Option::get(self::$moduleId, 'api_username');
-            $password = Option::get(self::$moduleId, 'api_password');
-
-            if (!$apiUrl || !$username || !$password) {
-                throw new Exception('Настройки API не заполнены');
-            }
-
-            self::$apiClient = new AVSBookingApiClient($apiUrl, $username, $password);
-        }
-        return self::$apiClient;
-    }
 
     public static function getGazeboData($elementId)
     {
-        if (!Loader::includeModule('iblock')) {
-            return null;
-        }
+        if (!Loader::includeModule('iblock')) return null;
 
         $res = \CIBlockElement::GetList(
             [],
@@ -63,15 +48,16 @@ class AVSBookingModule
                 'PROPERTY_PRICE_HOUR',
                 'PROPERTY_PRICE',
                 'PROPERTY_PRICE_NIGHT',
-                'PROPERTY_NIGHT_SEASON_START',
-                'PROPERTY_NIGHT_SEASON_END',
-                'PROPERTY_DEPOSIT_AMOUNT',
-                'PROPERTY_MIN_HOURS',
-                'PROPERTY_LEGAL_ENTITY'
+                'PROPERTY_DEPOSIT_AMOUNT'
             ]
         );
 
         if ($element = $res->Fetch()) {
+            $deposit = (float)$element['PROPERTY_DEPOSIT_AMOUNT_VALUE'];
+            if (!$deposit) {
+                $deposit = self::getDefaultDeposit((int)$element['ID']);
+            }
+
             return [
                 'id' => (int)$element['ID'],
                 'name' => (string)$element['NAME'],
@@ -79,243 +65,163 @@ class AVSBookingModule
                 'hourly_price' => (float)$element['PROPERTY_PRICE_HOUR_VALUE'],
                 'full_day_price' => (float)$element['PROPERTY_PRICE_VALUE'],
                 'night_price' => (float)$element['PROPERTY_PRICE_NIGHT_VALUE'],
-                'night_season_start' => $element['PROPERTY_NIGHT_SEASON_START_VALUE'],
-                'night_season_end' => $element['PROPERTY_NIGHT_SEASON_END_VALUE'],
-                'deposit_amount' => (float)$element['PROPERTY_DEPOSIT_AMOUNT_VALUE'],
-                'min_hours' => (int)$element['PROPERTY_MIN_HOURS_VALUE'] ?: 4,
-                'legal_entity' => $element['PROPERTY_LEGAL_ENTITY_VALUE'] ?: self::getLegalEntityByPavilion($element['NAME'])
+                'deposit_amount' => $deposit,
+                'legal_entity' => self::getLegalEntityByPavilionId((int)$element['ID'])
             ];
         }
-
         return null;
     }
 
-    private static function getLegalEntityByPavilion($pavilionName)
+    private static function getDefaultDeposit($pavilionId)
+    {
+        global $AVS_BOOKING_HIGH_DEPOSIT;
+
+        if (in_array($pavilionId, $AVS_BOOKING_HIGH_DEPOSIT)) {
+            return (float)Option::get(self::$moduleId, 'high_deposit_amount', 5000);
+        }
+
+        return (float)Option::get(self::$moduleId, 'default_deposit', 2000);
+    }
+
+    public static function getLegalEntityByPavilionId($pavilionId)
     {
         global $AVS_BOOKING_PAVILION_TO_LEGAL;
-        $pavilionKey = strtolower(str_replace(' ', '_', $pavilionName));
-        return $AVS_BOOKING_PAVILION_TO_LEGAL[$pavilionKey] ?? AVS_LEGAL_BETON_SYSTEMS;
+        return $AVS_BOOKING_PAVILION_TO_LEGAL[$pavilionId] ?? AVS_LEGAL_BETON_SYSTEMS;
     }
 
-    public static function getGazeboDataByResourceId($resourceId)
+    public static function updateGazeboPrices($pavilionId, $prices)
     {
-        if (!Loader::includeModule('iblock')) {
-            return null;
+        if (!Loader::includeModule('iblock')) return false;
+
+        $props = [];
+        if (isset($prices['hourly_price'])) $props['PRICE_HOUR'] = $prices['hourly_price'];
+        if (isset($prices['full_day_price'])) $props['PRICE'] = $prices['full_day_price'];
+        if (isset($prices['night_price'])) $props['PRICE_NIGHT'] = $prices['night_price'];
+
+        if (empty($props)) return false;
+
+        \CIBlockElement::SetPropertyValuesEx($pavilionId, 12, $props);
+        return true;
+    }
+
+    public static function isSummerPeriod($pavilionId, $date)
+    {
+        $gazebo = self::getGazeboData($pavilionId);
+        if (!$gazebo) return false;
+
+        $noSummerParks = ['Шарташ', 'Чемоданчик'];
+        if (in_array($gazebo['name'], $noSummerParks)) {
+            return false;
         }
 
-        $res = \CIBlockElement::GetList(
-            [],
-            [
-                'IBLOCK_ID' => 12,
-                'ACTIVE' => 'Y',
-                'PROPERTY_LIBREBOOKING_RESOURCE_ID' => $resourceId
-            ],
-            false,
-            false,
-            [
-                'ID',
-                'NAME',
-                'PROPERTY_LIBREBOOKING_RESOURCE_ID',
-                'PROPERTY_PRICE_HOUR',
-                'PROPERTY_PRICE',
-                'PROPERTY_PRICE_NIGHT',
-                'PROPERTY_NIGHT_SEASON_START',
-                'PROPERTY_NIGHT_SEASON_END',
-                'PROPERTY_DEPOSIT_AMOUNT',
-                'PROPERTY_MIN_HOURS',
-                'PROPERTY_LEGAL_ENTITY'
-            ]
-        );
+        $summerStart = Option::get(self::$moduleId, 'summer_period_start', date('Y') . '-06-01');
+        $summerEnd = Option::get(self::$moduleId, 'summer_period_end', date('Y') . '-08-31');
 
-        if ($element = $res->Fetch()) {
+        $dateObj = new DateTime($date);
+        $start = new DateTime($summerStart);
+        $end = new DateTime($summerEnd);
+
+        return ($dateObj >= $start && $dateObj <= $end);
+    }
+
+    public static function getWorkEndHour($pavilionId, $date)
+    {
+        if (self::isSummerPeriod($pavilionId, $date)) {
+            return 23;
+        }
+        return 22;
+    }
+
+    public static function getDateRestrictions($pavilionId, $date)
+    {
+        global $DB;
+
+        $sql = "SELECT * FROM avs_booking_special_dates 
+                WHERE PAVILION_ID = " . (int)$pavilionId . "
+                AND DATE = '" . $DB->ForSql($date) . "'";
+
+        $result = $DB->Query($sql);
+        if ($row = $result->Fetch()) {
             return [
-                'id' => (int)$element['ID'],
-                'name' => (string)$element['NAME'],
-                'resource_id' => (int)$element['PROPERTY_LIBREBOOKING_RESOURCE_ID_VALUE'],
-                'hourly_price' => (float)$element['PROPERTY_PRICE_HOUR_VALUE'],
-                'full_day_price' => (float)$element['PROPERTY_PRICE_VALUE'],
-                'night_price' => (float)$element['PROPERTY_PRICE_NIGHT_VALUE'],
-                'night_season_start' => $element['PROPERTY_NIGHT_SEASON_START_VALUE'],
-                'night_season_end' => $element['PROPERTY_NIGHT_SEASON_END_VALUE'],
-                'deposit_amount' => (float)$element['PROPERTY_DEPOSIT_AMOUNT_VALUE'],
-                'min_hours' => (int)$element['PROPERTY_MIN_HOURS_VALUE'] ?: 4,
-                'legal_entity' => $element['PROPERTY_LEGAL_ENTITY_VALUE'] ?: self::getLegalEntityByPavilion($element['NAME'])
+                'is_special' => true,
+                'restriction_type' => $row['RESTRICTION_TYPE'],
+                'allowed_types' => $row['ALLOWED_TYPES'] ? explode(',', $row['ALLOWED_TYPES']) : [],
+                'price_modifier' => (float)$row['PRICE_MODIFIER'],
+                'description' => $row['DESCRIPTION']
             ];
         }
 
-        return null;
+        return [
+            'is_special' => false,
+            'restriction_type' => 'standard',
+            'allowed_types' => ['hourly', 'full_day', 'night'],
+            'price_modifier' => 1,
+            'description' => ''
+        ];
     }
 
-    public static function getPriceForDate($elementId, $date, $priceType)
+    public static function getAvailableRentalTypes($pavilionId, $date)
     {
-        if (Loader::includeModule('iblock')) {
-            $periodsIblockId = Option::get(self::$moduleId, 'price_periods_iblock_id', 0);
+        $gazebo = self::getGazeboData($pavilionId);
+        if (!$gazebo) return [];
 
-            if ($periodsIblockId) {
-                $res = \CIBlockElement::GetList(
-                    ['PROPERTY_DATE_FROM' => 'DESC'],
-                    [
-                        'IBLOCK_ID' => $periodsIblockId,
-                        'PROPERTY_RESOURCE_ID' => $elementId,
-                        'ACTIVE' => 'Y',
-                        '<=PROPERTY_DATE_FROM' => $date,
-                        '>=PROPERTY_DATE_TO' => $date
-                    ],
-                    false,
-                    ['nTopCount' => 1],
-                    ['ID', 'PROPERTY_PRICE_HOUR', 'PROPERTY_PRICE_DAY', 'PROPERTY_PRICE_NIGHT']
-                );
+        $restrictions = self::getDateRestrictions($pavilionId, $date);
 
-                if ($period = $res->Fetch()) {
-                    $field = 'PROPERTY_PRICE_' . strtoupper($priceType === 'hourly' ? 'HOUR' : ($priceType === 'full_day' ? 'DAY' : 'NIGHT'));
-                    $price = $period[$field . '_VALUE'] ?? null;
-                    if ($price !== null && $price > 0) {
-                        return (float)$price;
-                    }
-                }
+        $allTypes = [
+            'hourly' => ['price' => $gazebo['hourly_price'], 'label' => 'Почасовая аренда'],
+            'full_day' => ['price' => $gazebo['full_day_price'], 'label' => 'Весь день'],
+            'night' => ['price' => $gazebo['night_price'], 'label' => 'Ночь (01:00-09:00)']
+        ];
+
+        if ($restrictions['is_special'] && !empty($restrictions['allowed_types'])) {
+            $allTypes = array_intersect_key($allTypes, array_flip($restrictions['allowed_types']));
+        }
+
+        foreach ($allTypes as $key => $type) {
+            if ($type['price'] <= 0) {
+                unset($allTypes[$key]);
             }
         }
 
-        $gazebo = self::getGazeboData($elementId);
-        if (!$gazebo) return null;
-
-        switch ($priceType) {
-            case 'hourly':
-                return $gazebo['hourly_price'];
-            case 'full_day':
-                return $gazebo['full_day_price'];
-            case 'night':
-                return $gazebo['night_price'];
-            default:
-                return null;
-        }
+        return $allTypes;
     }
 
-    public static function getAvailableRentalTypes($elementId, $bookingDate)
-    {
-        $gazebo = self::getGazeboData($elementId);
-        if (!$gazebo || !$gazebo['resource_id']) return [];
-
-        $types = [];
-        $timestamp = strtotime($bookingDate);
-
-        $hourlyPrice = self::getPriceForDate($elementId, $bookingDate, 'hourly');
-        $fullDayPrice = self::getPriceForDate($elementId, $bookingDate, 'full_day');
-        $nightPrice = self::getPriceForDate($elementId, $bookingDate, 'night');
-
-        if ($hourlyPrice > 0) {
-            $types['hourly'] = ['price' => $hourlyPrice, 'label' => 'Почасовая аренда'];
-        }
-
-        if ($fullDayPrice > 0) {
-            $types['full_day'] = ['price' => $fullDayPrice, 'label' => 'Весь день (10:00-22:00)'];
-        }
-
-        if ($nightPrice > 0 && self::isNightSeasonActive($gazebo, $timestamp)) {
-            $types['night'] = ['price' => $nightPrice, 'label' => 'Ночь (00:00-09:00)'];
-        }
-
-        return $types;
-    }
-
-    private static function isNightSeasonActive($gazebo, $timestamp)
-    {
-        $currentDate = date('Y-m-d', $timestamp);
-
-        if ($gazebo && !empty($gazebo['night_season_start']) && !empty($gazebo['night_season_end'])) {
-            $start = $gazebo['night_season_start'];
-            $end = $gazebo['night_season_end'];
-            $startTimestamp = strtotime($start);
-            $endTimestamp = strtotime($end);
-            return ($timestamp >= $startTimestamp && $timestamp <= $endTimestamp);
-        }
-
-        $startRaw = Option::get('avs_booking', 'summer_season_start', '01.06');
-        $endRaw = Option::get('avs_booking', 'summer_season_end', '31.08');
-
-        $year = date('Y', $timestamp);
-        $startParts = explode('.', $startRaw);
-        $endParts = explode('.', $endRaw);
-
-        $startDate = $year . '-' . str_pad($startParts[1], 2, '0', STR_PAD_LEFT) . '-' . str_pad($startParts[0], 2, '0', STR_PAD_LEFT);
-        $endDate = $year . '-' . str_pad($endParts[1], 2, '0', STR_PAD_LEFT) . '-' . str_pad($endParts[0], 2, '0', STR_PAD_LEFT);
-
-        $startTimestamp = strtotime($startDate);
-        $endTimestamp = strtotime($endDate);
-
-        return ($timestamp >= $startTimestamp && $timestamp <= $endTimestamp);
-    }
-
-    public static function getWorkEndHour($elementId, $date)
-    {
-        $gazebo = null;
-        if ($elementId > 0) {
-            $gazebo = self::getGazeboData($elementId);
-        }
-
-        $dateTime = new \DateTime($date, new \DateTimeZone('Asia/Yekaterinburg'));
-        $timestamp = $dateTime->getTimestamp();
-        $isNightSeason = self::isNightSeasonActive($gazebo, $timestamp);
-
-        if ($isNightSeason) {
-            return (int)Option::get('avs_booking', 'summer_end_hour', 23);
-        } else {
-            return (int)Option::get('avs_booking', 'winter_end_hour', 22);
-        }
-    }
-
-    public static function calculateTimeRange($rentalType, $date, $elementId, $startHour = null, $hours = null)
+    public static function calculateTimeRange($rentalType, $date, $pavilionId, $startHour = null, $hours = null)
     {
         $timezone = '+05:00';
+        $workEndHour = self::getWorkEndHour($pavilionId, $date);
+        $minHours = (int)Option::get(self::$moduleId, 'min_hours', 4);
 
         switch ($rentalType) {
             case 'full_day':
-                $workEndHour = self::getWorkEndHour($elementId, $date);
                 return [
                     'start' => $date . 'T10:00:00' . $timezone,
-                    'end' => $date . 'T' . $workEndHour . ':00:00' . $timezone
+                    'end' => $date . 'T' . $workEndHour . ':00:00' . $timezone,
+                    'duration' => $workEndHour - 10
                 ];
             case 'night':
-                $workEndHour = self::getWorkEndHour($elementId, $date);
-                $nextDay = date('Y-m-d', strtotime($date . ' +1 day'));
                 return [
-                    'start' => $date . 'T' . $workEndHour . ':00:00' . $timezone,
-                    'end' => $nextDay . 'T09:00:00' . $timezone
+                    'start' => $date . 'T01:00:00' . $timezone,
+                    'end' => $date . 'T09:00:00' . $timezone,
+                    'duration' => 8
                 ];
             case 'hourly':
+                if ($hours < $minHours) {
+                    return null;
+                }
                 $start = $date . 'T' . sprintf('%02d', $startHour) . ':00:00' . $timezone;
+                $endHour = $startHour + $hours;
+                if ($endHour > $workEndHour) {
+                    return null;
+                }
                 return [
                     'start' => $start,
-                    'end' => date('Y-m-d\TH:i:sP', strtotime($start . ' +' . $hours . ' hours'))
+                    'end' => $date . 'T' . sprintf('%02d', $endHour) . ':00:00' . $timezone,
+                    'duration' => $hours
                 ];
             default:
                 return null;
         }
-    }
-
-    public static function createBooking($resourceId, $startTime, $endTime, $userData)
-    {
-        $api = self::getApiClient();
-        return $api->createReservation($resourceId, $startTime, $endTime, $userData);
-    }
-
-    public static function checkAvailability($resourceId, $startTime, $endTime)
-    {
-        $api = self::getApiClient();
-        return $api->checkAvailability($resourceId, $startTime, $endTime);
-    }
-
-    public static function getAvailableSlots($resourceId, $date)
-    {
-        $api = self::getApiClient();
-        return $api->getAvailableSlotsForDate($resourceId, $date);
-    }
-
-    public static function sendNotifications($reference, $bookingData, $depositAmount)
-    {
-        $notificationService = new AVSNotificationService();
-        $notificationService->sendAdminEmail($reference, $bookingData, $depositAmount);
-        $notificationService->sendBitrix24Lead($reference, $bookingData, $depositAmount);
     }
 
     public static function createOrder($data)
@@ -323,13 +229,13 @@ class AVSBookingModule
         return \AVS\Booking\Order::create($data);
     }
 
-    public static function updateOrder($orderId, $data)
+    public static function getOrder($orderId)
     {
-        return \AVS\Booking\Order::update($orderId, $data);
+        return \AVS\Booking\Order::get($orderId);
     }
 
-    public static function extendOrderTime($orderId, $newEndTime)
+    public static function getOrdersList($filter = [], $limit = 100)
     {
-        return \AVS\Booking\Order::extendTime($orderId, $newEndTime);
+        return \AVS\Booking\Order::getList($filter, $limit, 0);
     }
 }
