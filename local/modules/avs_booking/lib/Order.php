@@ -1,5 +1,9 @@
 <?php
 
+/**
+ * Файл: /local/modules/avs_booking/lib/Order.php
+ */
+
 namespace AVS\Booking;
 
 use Bitrix\Main\Type\DateTime;
@@ -8,12 +12,11 @@ class Order
 {
     public static function create($data)
     {
-        $legalEntity = \AVSBookingModule::getLegalEntityByPavilion($data['pavilion_name']);
+        $legalEntity = \AVSBookingModule::getLegalEntityByPavilionId($data['pavilion_id']);
         $orderNumber = self::generateOrderNumber();
 
-        // Расчет цены с учетом тарифов и скидок
         $priceData = TariffManager::calculatePrice(
-            $data['pavilion_name'],
+            $data['pavilion_id'],
             $data['rental_type'],
             substr($data['start_time'], 0, 10),
             $data['duration_hours'] ?? null,
@@ -38,15 +41,20 @@ class Order
             'PRICE' => $priceData['total_price'],
             'DEPOSIT_AMOUNT' => $priceData['deposit_amount'],
             'DISCOUNT_AMOUNT' => $priceData['discount_amount'],
-            'STATUS' => 'pending',
+            'DISCOUNT_CODE' => $data['discount_code'] ?? null,
+            'STATUS' => $data['status'] ?? 'pending',
             'RENTAL_TYPE' => $data['rental_type'],
             'DURATION_HOURS' => $priceData['duration_hours'],
             'COMMENT' => $data['comment'] ?? '',
-            'LIBREBOOKING_RESERVATION_ID' => $data['librebooking_id'] ?? null
+            'LIBREBOOKING_RESERVATION_ID' => $data['librebooking_id'] ?? null,
+            'CREATED_AT' => new DateTime(),
+            'UPDATED_AT' => new DateTime()
         ]);
 
         if ($result->isSuccess()) {
-            return $result->getId();
+            $orderId = $result->getId();
+            self::logAction('create_order', $orderId, $data);
+            return $orderId;
         }
 
         return false;
@@ -91,7 +99,92 @@ class Order
         }
 
         $result = OrderTable::update($orderId, $updateData);
-        return $result->isSuccess();
+        if ($result->isSuccess()) {
+            self::logAction('update_order', $orderId, $updateData);
+            return true;
+        }
+
+        return false;
+    }
+
+    public static function updateRekvizits($orderId, $updateData, $changes)
+    {
+        $order = self::get($orderId);
+        if (!$order) {
+            return false;
+        }
+
+        $data = [];
+
+        if (isset($updateData['new_start_time'])) {
+            $data['START_TIME'] = new DateTime($updateData['new_start_time']);
+            $data['NEW_START_TIME'] = new DateTime($updateData['new_start_time']);
+        }
+
+        if (isset($updateData['new_end_time'])) {
+            $data['END_TIME'] = new DateTime($updateData['new_end_time']);
+            $data['NEW_END_TIME'] = new DateTime($updateData['new_end_time']);
+        }
+
+        if (isset($updateData['new_pavilion_id'])) {
+            $data['PAVILION_ID'] = $updateData['new_pavilion_id'];
+            $data['PAVILION_NAME'] = $updateData['new_pavilion_name'];
+            $data['NEW_PAVILION_ID'] = $updateData['new_pavilion_id'];
+            $data['NEW_PAVILION_NAME'] = $updateData['new_pavilion_name'];
+
+            $legalEntity = \AVSBookingModule::getLegalEntityByPavilionId($updateData['new_pavilion_id']);
+            $data['LEGAL_ENTITY'] = $legalEntity;
+        }
+
+        $data['UPDATED_AT'] = new DateTime();
+
+        if (empty($data)) {
+            return true;
+        }
+
+        $result = OrderTable::update($orderId, $data);
+
+        if ($result->isSuccess()) {
+            self::logAction('update_rekvizits', $orderId, $changes);
+
+            if ($order['LIBREBOOKING_RESERVATION_ID'] && (isset($updateData['new_start_time']) || isset($updateData['new_end_time']) || isset($updateData['new_pavilion_id']))) {
+                self::updateLibrebookingReservation($orderId, $updateData);
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private static function updateLibrebookingReservation($orderId, $updateData)
+    {
+        $order = self::get($orderId);
+        if (!$order || !$order['LIBREBOOKING_RESERVATION_ID']) {
+            return false;
+        }
+
+        try {
+            $client = new \AVSBookingLibreBookingClient();
+
+            $startTime = $updateData['new_start_time'] ?? $order['START_TIME']->toString();
+            $endTime = $updateData['new_end_time'] ?? $order['END_TIME']->toString();
+            $pavilionId = $updateData['new_pavilion_id'] ?? $order['PAVILION_ID'];
+
+            if ($pavilionId != $order['PAVILION_ID']) {
+                $gazebo = \AVSBookingModule::getGazeboData($pavilionId);
+                if ($gazebo && $gazebo['resource_id']) {
+                    $client->moveReservation($order['LIBREBOOKING_RESERVATION_ID'], $gazebo['resource_id'], $startTime, $endTime);
+                }
+            } else {
+                $client->updateReservationTime($order['LIBREBOOKING_RESERVATION_ID'], $endTime);
+            }
+
+            return true;
+        } catch (\Exception $e) {
+            self::logAction('librebooking_update_error', $orderId, ['error' => $e->getMessage()]);
+            return false;
+        }
     }
 
     public static function get($orderId)
@@ -126,19 +219,17 @@ class Order
         return $orders;
     }
 
-    public static function getListByPeriod($startDate, $endDate, $legalEntity = null)
+    public static function getListByPeriod($startDate, $endDate, $filter = [])
     {
-        $filter = [
+        $dateFilter = [
             '>=CREATED_AT' => new DateTime($startDate . ' 00:00:00'),
             '<=CREATED_AT' => new DateTime($endDate . ' 23:59:59'),
             'DELETED_AT' => null
         ];
 
-        if ($legalEntity) {
-            $filter['LEGAL_ENTITY'] = $legalEntity;
-        }
+        $allFilter = array_merge($dateFilter, $filter);
 
-        return self::getList($filter, 1000, 0);
+        return self::getList($allFilter, 1000, 0);
     }
 
     public static function softDelete($orderId, $userId = null)
@@ -163,6 +254,10 @@ class Order
             return ['success' => false, 'error' => 'Заказ не найден'];
         }
 
+        if ($order['STATUS'] !== 'paid' && $order['STATUS'] !== 'active' && $order['STATUS'] !== 'confirmed') {
+            return ['success' => false, 'error' => 'Продление возможно только для оплаченных или подтвержденных заказов'];
+        }
+
         $priceData = TariffManager::calculateExtensionPrice($orderId, $newEndTime);
         if (isset($priceData['error'])) {
             return $priceData;
@@ -170,11 +265,20 @@ class Order
 
         $updateResult = self::update($orderId, [
             'extended_end_time' => $newEndTime,
-            'price' => $priceData['new_total_price']
+            'END_TIME' => $newEndTime,
+            'PRICE' => $priceData['new_total_price']
         ]);
 
         if ($updateResult) {
-            self::logAction('extend_time', $orderId, ['new_end_time' => $newEndTime, 'additional_price' => $priceData['additional_price']]);
+            self::logAction('extend_time', $orderId, [
+                'new_end_time' => $newEndTime,
+                'additional_price' => $priceData['additional_price']
+            ]);
+
+            if ($order['LIBREBOOKING_RESERVATION_ID']) {
+                self::updateLibrebookingReservation($orderId, ['new_end_time' => $newEndTime]);
+            }
+
             return [
                 'success' => true,
                 'additional_price' => $priceData['additional_price'],
@@ -187,18 +291,83 @@ class Order
 
     public static function updateStatus($orderId, $status)
     {
-        self::logAction('status_change', $orderId, ['new_status' => $status]);
-        return self::update($orderId, ['status' => $status]);
+        $order = self::get($orderId);
+        if (!$order) {
+            return false;
+        }
+
+        $oldStatus = $order['STATUS'];
+
+        $result = self::update($orderId, ['status' => $status]);
+
+        if ($result) {
+            self::logAction('status_change', $orderId, [
+                'old_status' => $oldStatus,
+                'new_status' => $status
+            ]);
+
+            if ($status == 'paid' && $oldStatus != 'paid') {
+                $notification = new \AVSNotificationService();
+                $notification->sendPaymentSuccessNotification($order);
+            }
+
+            if ($status == 'confirmed' && $oldStatus != 'confirmed') {
+                $notification = new \AVSNotificationService();
+                $notification->sendConfirmationNotification($order);
+            }
+
+            if ($status == 'cancelled' && $oldStatus != 'cancelled') {
+                if ($order['LIBREBOOKING_RESERVATION_ID']) {
+                    self::cancelLibrebookingReservation($order['LIBREBOOKING_RESERVATION_ID']);
+                }
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private static function cancelLibrebookingReservation($reservationId)
+    {
+        try {
+            $client = new \AVSBookingLibreBookingClient();
+            $client->cancelReservation($reservationId);
+            return true;
+        } catch (\Exception $e) {
+            self::logAction('librebooking_cancel_error', 0, ['error' => $e->getMessage()]);
+            return false;
+        }
     }
 
     public static function updatePaymentInfo($orderId, $paymentId, $paymentStatus, $paidAmount)
     {
-        self::logAction('payment_update', $orderId, ['payment_id' => $paymentId, 'status' => $paymentStatus]);
-        return self::update($orderId, [
-            'payment_id' => $paymentId,
-            'payment_status' => $paymentStatus,
-            'paid_amount' => $paidAmount
+        $order = self::get($orderId);
+        if (!$order) {
+            return false;
+        }
+
+        $result = self::update($orderId, [
+            'PAYMENT_ID' => $paymentId,
+            'PAYMENT_STATUS' => $paymentStatus,
+            'PAID_AMOUNT' => $paidAmount
         ]);
+
+        if ($result) {
+            self::logAction('payment_update', $orderId, [
+                'payment_id' => $paymentId,
+                'status' => $paymentStatus,
+                'amount' => $paidAmount
+            ]);
+
+            if ($paymentStatus == 'succeeded' && $paidAmount >= $order['DEPOSIT_AMOUNT']) {
+                self::updateStatus($orderId, 'paid');
+            }
+
+            return true;
+        }
+
+        return false;
     }
 
     public static function getPaymentInfo($orderId)
@@ -209,13 +378,16 @@ class Order
         return [
             'order_id' => $order['ID'],
             'order_number' => $order['ORDER_NUMBER'],
+            'pavilion_id' => $order['PAVILION_ID'],
+            'pavilion_name' => $order['PAVILION_NAME'],
             'payment_id' => $order['PAYMENT_ID'],
             'payment_status' => $order['PAYMENT_STATUS'],
-            'paid_amount' => $order['PAID_AMOUNT'],
-            'price' => $order['PRICE'],
-            'deposit_amount' => $order['DEPOSIT_AMOUNT'],
+            'paid_amount' => (float)$order['PAID_AMOUNT'],
+            'price' => (float)$order['PRICE'],
+            'deposit_amount' => (float)$order['DEPOSIT_AMOUNT'],
             'legal_entity' => $order['LEGAL_ENTITY'],
-            'requires_full_payment' => $order['PAID_AMOUNT'] < $order['PRICE']
+            'requires_payment' => $order['PAID_AMOUNT'] < $order['PRICE'],
+            'remaining_amount' => $order['PRICE'] - $order['PAID_AMOUNT']
         ];
     }
 
@@ -227,10 +399,17 @@ class Order
     private static function logAction($action, $orderId, $data)
     {
         global $DB;
+
+        $message = json_encode($data, JSON_UNESCAPED_UNICODE);
+        if (strlen($message) > 1000) {
+            $message = substr($message, 0, 1000);
+        }
+
         $DB->Insert('avs_booking_log', [
             'ACTION' => "'" . $DB->ForSql($action) . "'",
             'ORDER_ID' => intval($orderId),
-            'MESSAGE' => "'" . $DB->ForSql(json_encode($data, JSON_UNESCAPED_UNICODE)) . "'",
+            'USER_ID' => intval($GLOBALS['USER']->GetID() ?? 0),
+            'MESSAGE' => "'" . $DB->ForSql($message) . "'",
             'IP_ADDRESS' => "'" . $DB->ForSql($_SERVER['REMOTE_ADDR'] ?? '') . "'",
             'CREATED_AT' => "'" . date('Y-m-d H:i:s') . "'"
         ]);

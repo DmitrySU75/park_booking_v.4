@@ -1,5 +1,9 @@
 <?php
 
+/**
+ * Файл: /local/modules/avs_booking/lib/Api.php
+ */
+
 namespace AVS\Booking;
 
 class Api
@@ -26,21 +30,27 @@ class Api
         switch ($action) {
             case 'create_order':
                 if ($method === 'POST') $this->createOrder();
+                else $this->errorResponse('Method not allowed', 405);
+                break;
+            case 'update_status':
+                if ($method === 'POST' || $method === 'PUT') $this->updateStatus();
+                else $this->errorResponse('Method not allowed', 405);
                 break;
             case 'update_order':
                 if ($method === 'POST' || $method === 'PUT') $this->updateOrder();
+                else $this->errorResponse('Method not allowed', 405);
                 break;
             case 'get_orders':
                 if ($method === 'GET') $this->getOrders();
+                else $this->errorResponse('Method not allowed', 405);
                 break;
             case 'get_payment_info':
                 if ($method === 'GET') $this->getPaymentInfo();
+                else $this->errorResponse('Method not allowed', 405);
                 break;
-            case 'delete_order':
-                if ($method === 'DELETE') $this->deleteOrder();
-                break;
-            case 'get_available_pavilions':
-                if ($method === 'GET') $this->getAvailablePavilions();
+            case 'update_prices':
+                if ($method === 'POST' || $method === 'PUT') $this->updatePrices();
+                else $this->errorResponse('Method not allowed', 405);
                 break;
             default:
                 $this->errorResponse('Action not found', 404);
@@ -51,8 +61,7 @@ class Api
     {
         $data = json_decode(file_get_contents('php://input'), true);
 
-        // Валидация
-        $required = ['pavilion_name', 'client_name', 'client_phone', 'start_time', 'end_time', 'rental_type'];
+        $required = ['pavilion_id', 'client_name', 'client_phone', 'period_start', 'period_end', 'price'];
         foreach ($required as $field) {
             if (empty($data[$field])) {
                 $this->errorResponse("Missing field: {$field}", 400);
@@ -60,22 +69,43 @@ class Api
             }
         }
 
-        // Проверка ограничений даты
-        $date = substr($data['start_time'], 0, 10);
-        $restrictions = \AVSBookingModule::getDateRestrictions($data['pavilion_name'], $date);
-        if ($restrictions['is_special'] && !in_array($data['rental_type'], $restrictions['allowed_types'])) {
+        $gazebo = \AVSBookingModule::getGazeboData($data['pavilion_id']);
+        if (!$gazebo) {
+            $this->errorResponse('Pavilion not found', 404);
+            return;
+        }
+
+        $date = substr($data['period_start'], 0, 10);
+        $rentalType = $data['rental_type'] ?? 'hourly';
+
+        $restrictions = \AVSBookingModule::getDateRestrictions($data['pavilion_id'], $date);
+        if ($restrictions['is_special'] && !in_array($rentalType, $restrictions['allowed_types'])) {
             $this->errorResponse('Данный тип аренды недоступен в выбранную дату', 400);
             return;
         }
 
-        // Проверка доступности
-        $available = self::checkAvailability($data['pavilion_name'], $data['start_time'], $data['end_time']);
+        $available = $this->checkAvailability($gazebo['resource_id'], $data['period_start'], $data['period_end']);
         if (!$available) {
             $this->errorResponse('Выбранное время недоступно', 400);
             return;
         }
 
-        $orderId = Order::create($data);
+        $orderData = [
+            'pavilion_id' => $data['pavilion_id'],
+            'pavilion_name' => $gazebo['name'],
+            'client_name' => $data['client_name'],
+            'client_phone' => $data['client_phone'],
+            'client_email' => $data['client_email'] ?? '',
+            'start_time' => $data['period_start'],
+            'end_time' => $data['period_end'],
+            'price' => $data['price'],
+            'rental_type' => $rentalType,
+            'status' => $data['status'] ?? 'pending',
+            'comment' => $data['comment'] ?? '',
+            'discount_code' => $data['discount_code'] ?? null
+        ];
+
+        $orderId = Order::create($orderData);
 
         if ($orderId) {
             $order = Order::get($orderId);
@@ -91,6 +121,49 @@ class Api
         }
     }
 
+    private function updateStatus()
+    {
+        $data = json_decode(file_get_contents('php://input'), true);
+
+        $orderId = $data['order_id'] ?? 0;
+        $orderNumber = $data['order_number'] ?? '';
+        $newStatus = $data['status'] ?? '';
+
+        if ((!$orderId && !$orderNumber) || !$newStatus) {
+            $this->errorResponse('order_id/order_number and status required', 400);
+            return;
+        }
+
+        $allowedStatuses = ['pending', 'paid', 'confirmed', 'cancelled', 'completed'];
+        if (!in_array($newStatus, $allowedStatuses)) {
+            $this->errorResponse('Invalid status. Allowed: ' . implode(', ', $allowedStatuses), 400);
+            return;
+        }
+
+        $order = null;
+        if ($orderId) {
+            $order = Order::get($orderId);
+        } else {
+            $order = Order::getByOrderNumber($orderNumber);
+        }
+
+        if (!$order) {
+            $this->errorResponse('Order not found', 404);
+            return;
+        }
+
+        if (Order::updateStatus($order['ID'], $newStatus)) {
+            $this->successResponse([
+                'order_id' => $order['ID'],
+                'order_number' => $order['ORDER_NUMBER'],
+                'old_status' => $order['STATUS'],
+                'new_status' => $newStatus
+            ]);
+        } else {
+            $this->errorResponse('Status update failed', 500);
+        }
+    }
+
     private function updateOrder()
     {
         $data = json_decode(file_get_contents('php://input'), true);
@@ -98,10 +171,15 @@ class Api
         $orderId = $data['order_id'] ?? 0;
         $orderNumber = $data['order_number'] ?? '';
 
+        if ((!$orderId && !$orderNumber)) {
+            $this->errorResponse('order_id or order_number required', 400);
+            return;
+        }
+
         $order = null;
         if ($orderId) {
             $order = Order::get($orderId);
-        } elseif ($orderNumber) {
+        } else {
             $order = Order::getByOrderNumber($orderNumber);
         }
 
@@ -111,15 +189,74 @@ class Api
         }
 
         $updateData = [];
-        $allowed = ['status', 'client_name', 'client_phone', 'client_email', 'price', 'comment'];
-        foreach ($allowed as $field) {
-            if (isset($data[$field])) {
-                $updateData[$field] = $data[$field];
+        $changes = [];
+
+        if (isset($data['new_start_time']) && isset($data['new_end_time'])) {
+            $newStart = $data['new_start_time'];
+            $newEnd = $data['new_end_time'];
+
+            $gazebo = \AVSBookingModule::getGazeboData($order['PAVILION_ID']);
+            if ($gazebo && $gazebo['resource_id']) {
+                $available = $this->checkAvailability($gazebo['resource_id'], $newStart, $newEnd, $order['LIBREBOOKING_RESERVATION_ID']);
+                if (!$available) {
+                    $this->errorResponse('Новое время недоступно', 400);
+                    return;
+                }
             }
+
+            $updateData['new_start_time'] = $newStart;
+            $updateData['new_end_time'] = $newEnd;
+            $changes['time'] = [
+                'old_start' => $order['START_TIME']->toString(),
+                'old_end' => $order['END_TIME']->toString(),
+                'new_start' => $newStart,
+                'new_end' => $newEnd
+            ];
         }
 
-        if (Order::update($order['ID'], $updateData)) {
-            $this->successResponse(['updated' => true, 'order_id' => $order['ID']]);
+        if (isset($data['new_pavilion_id'])) {
+            $newPavilionId = (int)$data['new_pavilion_id'];
+            $newGazebo = \AVSBookingModule::getGazeboData($newPavilionId);
+
+            if (!$newGazebo) {
+                $this->errorResponse('New pavilion not found', 404);
+                return;
+            }
+
+            $currentStart = $updateData['new_start_time'] ?? $order['START_TIME']->toString();
+            $currentEnd = $updateData['new_end_time'] ?? $order['END_TIME']->toString();
+
+            if ($newGazebo['resource_id']) {
+                $available = $this->checkAvailability($newGazebo['resource_id'], $currentStart, $currentEnd, null);
+                if (!$available) {
+                    $this->errorResponse('Новая беседка недоступна в выбранное время', 400);
+                    return;
+                }
+            }
+
+            $updateData['new_pavilion_id'] = $newPavilionId;
+            $updateData['new_pavilion_name'] = $newGazebo['name'];
+            $changes['pavilion'] = [
+                'old_id' => $order['PAVILION_ID'],
+                'old_name' => $order['PAVILION_NAME'],
+                'new_id' => $newPavilionId,
+                'new_name' => $newGazebo['name']
+            ];
+        }
+
+        if (empty($updateData)) {
+            $this->errorResponse('No update data provided', 400);
+            return;
+        }
+
+        if (Order::updateRekvizits($order['ID'], $updateData, $changes)) {
+            $updatedOrder = Order::get($order['ID']);
+            $this->successResponse([
+                'order_id' => $updatedOrder['ID'],
+                'order_number' => $updatedOrder['ORDER_NUMBER'],
+                'changes' => $changes,
+                'status' => $updatedOrder['STATUS']
+            ]);
         } else {
             $this->errorResponse('Update failed', 500);
         }
@@ -127,53 +264,70 @@ class Api
 
     private function getOrders()
     {
-        $startDate = $_GET['start_date'] ?? date('Y-m-d', strtotime('-30 days'));
-        $endDate = $_GET['end_date'] ?? date('Y-m-d');
-        $legalEntity = $_GET['legal_entity'] ?? '';
+        $startDate = $_GET['start_date'] ?? '';
+        $endDate = $_GET['end_date'] ?? '';
         $status = $_GET['status'] ?? '';
+        $pavilionId = (int)($_GET['pavilion_id'] ?? 0);
+        $legalEntity = $_GET['legal_entity'] ?? '';
 
-        $orders = Order::getListByPeriod($startDate, $endDate, $legalEntity);
-
-        if ($status) {
-            $orders = array_filter($orders, function ($o) use ($status) {
-                return $o['STATUS'] === $status;
-            });
+        if (!$startDate || !$endDate) {
+            $this->errorResponse('start_date and end_date required', 400);
+            return;
         }
+
+        $filter = [];
+        if ($status) $filter['STATUS'] = $status;
+        if ($pavilionId) $filter['PAVILION_ID'] = $pavilionId;
+        if ($legalEntity) $filter['LEGAL_ENTITY'] = $legalEntity;
+
+        $orders = Order::getListByPeriod($startDate, $endDate, $filter);
 
         $result = [];
         foreach ($orders as $order) {
             $result[] = [
                 'id' => $order['ID'],
                 'order_number' => $order['ORDER_NUMBER'],
+                'pavilion_id' => $order['PAVILION_ID'],
                 'pavilion_name' => $order['PAVILION_NAME'],
                 'legal_entity' => $order['LEGAL_ENTITY'],
                 'client_name' => $order['CLIENT_NAME'],
                 'client_phone' => $order['CLIENT_PHONE'],
                 'client_email' => $order['CLIENT_EMAIL'],
-                'start_time' => $order['START_TIME']->toString(),
-                'end_time' => $order['END_TIME']->toString(),
+                'period_start' => $order['START_TIME']->toString(),
+                'period_end' => $order['END_TIME']->toString(),
                 'price' => $order['PRICE'],
                 'deposit_amount' => $order['DEPOSIT_AMOUNT'],
                 'paid_amount' => $order['PAID_AMOUNT'],
                 'status' => $order['STATUS'],
                 'payment_status' => $order['PAYMENT_STATUS'],
                 'rental_type' => $order['RENTAL_TYPE'],
-                'created_at' => $order['CREATED_AT']->toString()
+                'duration_hours' => $order['DURATION_HOURS'],
+                'created_at' => $order['CREATED_AT']->toString(),
+                'updated_at' => $order['UPDATED_AT']->toString()
             ];
         }
 
-        $this->successResponse(['orders' => $result, 'total' => count($result)]);
+        $this->successResponse([
+            'orders' => $result,
+            'total' => count($result),
+            'period' => ['start' => $startDate, 'end' => $endDate]
+        ]);
     }
 
     private function getPaymentInfo()
     {
-        $orderId = $_GET['order_id'] ?? 0;
+        $orderId = (int)($_GET['order_id'] ?? 0);
         $orderNumber = $_GET['order_number'] ?? '';
+
+        if (!$orderId && !$orderNumber) {
+            $this->errorResponse('order_id or order_number required', 400);
+            return;
+        }
 
         $order = null;
         if ($orderId) {
             $order = Order::get($orderId);
-        } elseif ($orderNumber) {
+        } else {
             $order = Order::getByOrderNumber($orderNumber);
         }
 
@@ -182,68 +336,121 @@ class Api
             return;
         }
 
-        $this->successResponse(Order::getPaymentInfo($order['ID']));
+        $this->successResponse([
+            'order_id' => $order['ID'],
+            'order_number' => $order['ORDER_NUMBER'],
+            'pavilion_name' => $order['PAVILION_NAME'],
+            'price' => $order['PRICE'],
+            'deposit_amount' => $order['DEPOSIT_AMOUNT'],
+            'paid_amount' => $order['PAID_AMOUNT'],
+            'payment_id' => $order['PAYMENT_ID'],
+            'payment_status' => $order['PAYMENT_STATUS'],
+            'legal_entity' => $order['LEGAL_ENTITY'],
+            'status' => $order['STATUS'],
+            'requires_payment' => $order['PAID_AMOUNT'] < $order['PRICE']
+        ]);
     }
 
-    private function deleteOrder()
+    private function updatePrices()
     {
         $data = json_decode(file_get_contents('php://input'), true);
-        $orderId = $data['order_id'] ?? 0;
 
-        if (!$orderId) {
-            $this->errorResponse('order_id required', 400);
+        $effectiveFrom = $data['effective_from'] ?? '';
+        $prices = $data['prices'] ?? [];
+
+        if (!$effectiveFrom || empty($prices)) {
+            $this->errorResponse('effective_from and prices array required', 400);
             return;
         }
 
-        if (Order::softDelete($orderId)) {
-            $this->successResponse(['deleted' => true]);
-        } else {
-            $this->errorResponse('Delete failed', 500);
-        }
-    }
-
-    private function getAvailablePavilions()
-    {
-        $date = $_GET['date'] ?? date('Y-m-d');
-
-        if (!\Bitrix\Main\Loader::includeModule('iblock')) {
-            $this->errorResponse('IBlock module not loaded', 500);
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $effectiveFrom)) {
+            $this->errorResponse('effective_from must be in YYYY-MM-DD format', 400);
             return;
         }
 
-        $res = \CIBlockElement::GetList(
-            ['NAME' => 'ASC'],
-            ['IBLOCK_ID' => 12, 'ACTIVE' => 'Y'],
-            false,
-            false,
-            ['ID', 'NAME']
-        );
+        $updated = [];
+        $errors = [];
 
-        $pavilions = [];
-        while ($el = $res->Fetch()) {
-            $types = \AVSBookingModule::getAvailableRentalTypes($el['NAME'], $date);
-            if (!empty($types)) {
-                $pavilions[] = [
-                    'id' => $el['ID'],
-                    'name' => $el['NAME'],
-                    'available_types' => array_keys($types)
+        foreach ($prices as $priceItem) {
+            if (empty($priceItem['pavilion_id'])) {
+                $errors[] = 'Missing pavilion_id in price item';
+                continue;
+            }
+
+            $pavilionId = (int)$priceItem['pavilion_id'];
+            $gazebo = \AVSBookingModule::getGazeboData($pavilionId);
+
+            if (!$gazebo) {
+                $errors[] = "Pavilion ID {$pavilionId} not found";
+                continue;
+            }
+
+            $updateData = [];
+            if (isset($priceItem['price_hour'])) $updateData['hourly_price'] = (float)$priceItem['price_hour'];
+            if (isset($priceItem['price_day'])) $updateData['full_day_price'] = (float)$priceItem['price_day'];
+            if (isset($priceItem['price_night'])) $updateData['night_price'] = (float)$priceItem['price_night'];
+
+            if (empty($updateData)) {
+                $errors[] = "No price data for pavilion ID {$pavilionId}";
+                continue;
+            }
+
+            self::savePriceHistory($pavilionId, $updateData, $effectiveFrom);
+
+            $result = \AVSBookingModule::updateGazeboPrices($pavilionId, $updateData);
+
+            if ($result) {
+                $updated[] = [
+                    'pavilion_id' => $pavilionId,
+                    'pavilion_name' => $gazebo['name'],
+                    'effective_from' => $effectiveFrom,
+                    'new_prices' => $updateData
                 ];
+            } else {
+                $errors[] = "Failed to update prices for pavilion ID {$pavilionId}";
             }
         }
 
-        $this->successResponse(['pavilions' => $pavilions, 'date' => $date]);
+        $this->successResponse([
+            'effective_from' => $effectiveFrom,
+            'updated' => $updated,
+            'updated_count' => count($updated),
+            'errors' => $errors
+        ]);
     }
 
-    private function checkAvailability($pavilionName, $startTime, $endTime)
+    private function savePriceHistory($pavilionId, $prices, $effectiveFrom)
     {
-        $gazebo = \AVSBookingModule::getGazeboDataByName($pavilionName);
-        if (!$gazebo || !$gazebo['resource_id']) return false;
+        global $DB;
+
+        $fields = [];
+        if (isset($prices['hourly_price'])) $fields['PRICE_HOUR'] = $prices['hourly_price'];
+        if (isset($prices['full_day_price'])) $fields['PRICE_DAY'] = $prices['full_day_price'];
+        if (isset($prices['night_price'])) $fields['PRICE_NIGHT'] = $prices['night_price'];
+
+        $sql = "INSERT INTO avs_booking_price_history 
+                (PAVILION_ID, PRICE_HOUR, PRICE_DAY, PRICE_NIGHT, EFFECTIVE_FROM, CREATED_AT)
+                VALUES (
+                    {$pavilionId},
+                    " . ($fields['PRICE_HOUR'] ?? 'NULL') . ",
+                    " . ($fields['PRICE_DAY'] ?? 'NULL') . ",
+                    " . ($fields['PRICE_NIGHT'] ?? 'NULL') . ",
+                    '{$effectiveFrom}',
+                    NOW()
+                )";
+
+        $DB->Query($sql);
+    }
+
+    private function checkAvailability($resourceId, $startTime, $endTime, $excludeReservationId = null)
+    {
+        if (!$resourceId) return true;
 
         try {
-            $client = new LibreBookingClient();
-            return $client->checkAvailability($gazebo['resource_id'], $startTime, $endTime);
+            $client = new \AVSBookingLibreBookingClient();
+            return $client->checkAvailability($resourceId, $startTime, $endTime, $excludeReservationId);
         } catch (\Exception $e) {
-            return false;
+            return true;
         }
     }
 
@@ -256,14 +463,14 @@ class Api
 
     private function successResponse($data)
     {
-        echo json_encode(['success' => true, 'data' => $data]);
+        echo json_encode(['success' => true, 'data' => $data], JSON_UNESCAPED_UNICODE);
         exit;
     }
 
     private function errorResponse($message, $code = 400)
     {
         http_response_code($code);
-        echo json_encode(['success' => false, 'error' => $message]);
+        echo json_encode(['success' => false, 'error' => $message], JSON_UNESCAPED_UNICODE);
         exit;
     }
 }

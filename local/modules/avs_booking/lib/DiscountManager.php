@@ -1,12 +1,11 @@
 <?php
 
-namespace AVS\Booking;
+/**
+ * Файл: /local/modules/avs_booking/lib/DiscountManager.php
+ */
 
-class DiscountManager
+class AVSBookingDiscountManager
 {
-    /**
-     * Применение скидки
-     */
     public static function applyDiscount($code, $amount)
     {
         global $DB;
@@ -35,7 +34,6 @@ class DiscountManager
 
             $discountAmount = min($discountAmount, $amount);
 
-            // Увеличиваем счетчик использований
             $DB->Query("UPDATE avs_booking_discounts SET USES_COUNT = USES_COUNT + 1 WHERE ID = " . $discount['ID']);
 
             return [
@@ -51,9 +49,6 @@ class DiscountManager
         return ['success' => false, 'error' => 'Промокод недействителен'];
     }
 
-    /**
-     * Создание промокода
-     */
     public static function createDiscount($data)
     {
         global $DB;
@@ -82,9 +77,6 @@ class DiscountManager
         return $DB->AffectedRowsCount() > 0;
     }
 
-    /**
-     * Получение активных промокодов
-     */
     public static function getActiveDiscounts()
     {
         global $DB;

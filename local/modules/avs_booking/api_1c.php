@@ -1,4 +1,9 @@
 <?php
+
+/**
+ * Файл: /local/modules/avs_booking/api_1c.php
+ */
+
 require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php');
 
 use AVS\Booking\Order;
@@ -42,10 +47,24 @@ function exportOrders()
 
     $orders = Order::getListByPeriod($fromDate, $toDate);
 
-    $export = new OneCIntegration();
-    $result = $export->exportOrders($orders);
+    $result = [];
+    foreach ($orders as $order) {
+        $result[] = [
+            'order_number' => $order['ORDER_NUMBER'],
+            'pavilion_id' => $order['PAVILION_ID'],
+            'pavilion_name' => $order['PAVILION_NAME'],
+            'client_name' => $order['CLIENT_NAME'],
+            'client_phone' => $order['CLIENT_PHONE'],
+            'start_time' => $order['START_TIME']->toString(),
+            'end_time' => $order['END_TIME']->toString(),
+            'price' => $order['PRICE'],
+            'deposit' => $order['DEPOSIT_AMOUNT'],
+            'status' => $order['STATUS'],
+            'legal_entity' => $order['LEGAL_ENTITY']
+        ];
+    }
 
-    echo json_encode($result);
+    echo json_encode(['success' => true, 'orders' => $result]);
 }
 
 function importStatus()

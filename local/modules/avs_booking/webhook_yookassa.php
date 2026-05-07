@@ -1,4 +1,9 @@
 <?php
+
+/**
+ * Файл: /local/modules/avs_booking/webhook_yookassa.php
+ */
+
 require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php');
 
 use AVS\Booking\Payment;

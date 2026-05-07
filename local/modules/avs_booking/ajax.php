@@ -1,8 +1,14 @@
 <?php
+
+/**
+ * Файл: /local/modules/avs_booking/ajax.php
+ */
+
 require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php');
 
 use AVS\Booking\Order;
 use AVS\Booking\Payment;
+use AVS\Booking\TariffManager;
 
 CModule::IncludeModule('avs_booking');
 
@@ -22,6 +28,12 @@ switch ($action) {
         break;
     case 'get_price':
         getPrice();
+        break;
+    case 'apply_discount':
+        applyDiscount();
+        break;
+    case 'get_date_restrictions':
+        getDateRestrictions();
         break;
     default:
         echo json_encode(['success' => false, 'error' => 'Unknown action']);
@@ -57,62 +69,90 @@ function createPayment()
 
 function checkAvailability()
 {
-    $resourceId = intval($_REQUEST['resource_id'] ?? 0);
+    $pavilionId = intval($_REQUEST['pavilion_id'] ?? 0);
     $date = $_REQUEST['date'] ?? '';
     $rentalType = $_REQUEST['rental_type'] ?? '';
-    $startHour = $_REQUEST['start_hour'] ?? null;
-    $hours = $_REQUEST['hours'] ?? null;
-    $elementId = intval($_REQUEST['element_id'] ?? 0);
+    $startHour = intval($_REQUEST['start_hour'] ?? 0);
+    $hours = intval($_REQUEST['hours'] ?? 0);
 
-    if (!$resourceId || !$date || !$rentalType) {
+    if (!$pavilionId || !$date || !$rentalType) {
         echo json_encode(['success' => false, 'error' => 'Missing parameters']);
         return;
     }
 
+    $timeRange = AVSBookingModule::calculateTimeRange($rentalType, $date, $pavilionId, $startHour, $hours);
+
+    if (!$timeRange) {
+        echo json_encode(['success' => false, 'available' => false, 'error' => 'Invalid time range']);
+        return;
+    }
+
+    $gazebo = AVSBookingModule::getGazeboData($pavilionId);
+    if (!$gazebo || !$gazebo['resource_id']) {
+        echo json_encode(['success' => false, 'available' => false, 'error' => 'Gazebo not found']);
+        return;
+    }
+
     try {
-        if ($rentalType == 'hourly' && $startHour !== null && $hours !== null) {
-            $timeRange = AVSBookingModule::calculateTimeRange('hourly', $date, $elementId, $startHour, $hours);
-        } elseif ($rentalType == 'full_day') {
-            $timeRange = AVSBookingModule::calculateTimeRange('full_day', $date, $elementId);
-        } elseif ($rentalType == 'night') {
-            $timeRange = AVSBookingModule::calculateTimeRange('night', $date, $elementId);
-        } else {
-            echo json_encode(['success' => false, 'error' => 'Invalid rental type']);
-            return;
-        }
-
-        if (!$timeRange) {
-            echo json_encode(['success' => false, 'error' => 'Invalid time range']);
-            return;
-        }
-
-        $available = AVSBookingModule::checkAvailability($resourceId, $timeRange['start'], $timeRange['end']);
-
+        $client = new AVSBookingLibreBookingClient();
+        $available = $client->checkAvailability($gazebo['resource_id'], $timeRange['start'], $timeRange['end']);
         echo json_encode(['success' => true, 'available' => $available]);
     } catch (Exception $e) {
-        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+        echo json_encode(['success' => false, 'available' => false, 'error' => $e->getMessage()]);
     }
 }
 
 function getPrice()
 {
-    $elementId = intval($_REQUEST['element_id'] ?? 0);
+    $pavilionId = intval($_REQUEST['pavilion_id'] ?? 0);
+    $rentalType = $_REQUEST['rental_type'] ?? '';
     $date = $_REQUEST['date'] ?? '';
-    $priceType = $_REQUEST['price_type'] ?? 'hourly';
     $hours = intval($_REQUEST['hours'] ?? 0);
+    $discountCode = $_REQUEST['discount_code'] ?? '';
 
-    if (!$elementId || !$date) {
+    if (!$pavilionId || !$rentalType || !$date) {
         echo json_encode(['success' => false, 'error' => 'Missing parameters']);
         return;
     }
 
-    $price = AVSBookingModule::getPriceForDate($elementId, $date, $priceType);
+    $priceData = TariffManager::calculatePrice($pavilionId, $rentalType, $date, $hours, $discountCode);
+    echo json_encode($priceData);
+}
 
-    if ($priceType == 'hourly' && $hours > 0) {
-        $price = $price * $hours;
+function applyDiscount()
+{
+    $code = $_REQUEST['code'] ?? '';
+    $amount = floatval($_REQUEST['amount'] ?? 0);
+
+    if (!$code || !$amount) {
+        echo json_encode(['success' => false, 'error' => 'Missing parameters']);
+        return;
     }
 
-    echo json_encode(['success' => true, 'price' => $price]);
+    $result = AVSBookingDiscountManager::applyDiscount($code, $amount);
+    echo json_encode($result);
+}
+
+function getDateRestrictions()
+{
+    $pavilionId = intval($_REQUEST['pavilion_id'] ?? 0);
+    $date = $_REQUEST['date'] ?? '';
+
+    if (!$pavilionId || !$date) {
+        echo json_encode(['success' => false, 'error' => 'Missing parameters']);
+        return;
+    }
+
+    $restrictions = AVSBookingModule::getDateRestrictions($pavilionId, $date);
+    echo json_encode([
+        'success' => true,
+        'data' => [
+            'is_special' => $restrictions['is_special'],
+            'allowed_types' => $restrictions['allowed_types'],
+            'price_modifier' => $restrictions['price_modifier'],
+            'description' => $restrictions['description']
+        ]
+    ]);
 }
 
 require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/epilog_after.php');

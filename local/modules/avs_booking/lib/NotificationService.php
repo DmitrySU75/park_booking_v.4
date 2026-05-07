@@ -1,11 +1,16 @@
 <?php
 
+/**
+ * Файл: /local/modules/avs_booking/lib/NotificationService.php
+ */
+
 class AVSNotificationService
 {
     private $adminEmail;
     private $managerEmail;
     private $b24Webhook;
     private $tgBotToken;
+    private $tgManagerChatId;
 
     public function __construct()
     {
@@ -13,11 +18,9 @@ class AVSNotificationService
         $this->managerEmail = \Bitrix\Main\Config\Option::get('avs_booking', 'manager_email', '');
         $this->b24Webhook = \Bitrix\Main\Config\Option::get('avs_booking', 'b24_webhook_url', '');
         $this->tgBotToken = \Bitrix\Main\Config\Option::get('avs_booking', 'tg_bot_token', '');
+        $this->tgManagerChatId = \Bitrix\Main\Config\Option::get('avs_booking', 'tg_manager_chat_id', '');
     }
 
-    /**
-     * Уведомление менеджера о новом бронировании
-     */
     public function sendNewOrderNotification($order)
     {
         $message = "🆕 НОВОЕ БРОНИРОВАНИЕ\n\n";
@@ -31,28 +34,19 @@ class AVSNotificationService
         $message .= "Аванс: {$order['DEPOSIT_AMOUNT']} руб.\n";
         $message .= "Тип: {$order['RENTAL_TYPE']}\n";
 
-        // Email менеджеру
         if ($this->managerEmail) {
             mail($this->managerEmail, 'Новое бронирование #' . $order['ORDER_NUMBER'], $message, 'Content-Type: text/plain; charset=utf-8');
         }
 
-        // Email администратору
-        if ($this->adminEmail) {
+        if ($this->adminEmail && $this->adminEmail !== $this->managerEmail) {
             mail($this->adminEmail, 'Новое бронирование #' . $order['ORDER_NUMBER'], $message, 'Content-Type: text/plain; charset=utf-8');
         }
 
-        // Битрикс24
         $this->sendToBitrix24($order);
-
-        // Telegram менеджеру
         $this->sendToTelegram($message);
-
         $this->logNotification($order['ID'], 'new_order', $this->managerEmail ?: $this->adminEmail);
     }
 
-    /**
-     * Отправка клиенту подтверждения бронирования
-     */
     public function sendClientConfirmation($order)
     {
         $message = "✅ Ваше бронирование подтверждено!\n\n";
@@ -60,15 +54,14 @@ class AVSNotificationService
         $message .= "Беседка: {$order['PAVILION_NAME']}\n";
         $message .= "Дата: " . date('d.m.Y', strtotime($order['START_TIME'])) . "\n";
         $message .= "Время: " . date('H:i', strtotime($order['START_TIME'])) . " - " . date('H:i', strtotime($order['END_TIME'])) . "\n";
-        $message .= "Сумма к оплате: {$order['PRICE']} руб.\n";
+        $message .= "Сумма: {$order['PRICE']} руб.\n";
         $message .= "Аванс: {$order['DEPOSIT_AMOUNT']} руб.\n\n";
         $message .= "Ссылка для оплаты: https://" . $_SERVER['HTTP_HOST'] . "/payment/?order_id={$order['ID']}\n";
 
         if ($order['CLIENT_EMAIL']) {
-            \CEvent::Send('AVS_BOOKING_NEW_ORDER', 's1', [
+            \CEvent::Send('AVS_BOOKING_CONFIRMATION', 's1', [
                 'ORDER_NUMBER' => $order['ORDER_NUMBER'],
                 'CLIENT_NAME' => $order['CLIENT_NAME'],
-                'CLIENT_PHONE' => $order['CLIENT_PHONE'],
                 'PAVILION_NAME' => $order['PAVILION_NAME'],
                 'START_TIME' => $order['START_TIME'],
                 'END_TIME' => $order['END_TIME'],
@@ -76,16 +69,13 @@ class AVSNotificationService
             ], 'Y', '', [$order['CLIENT_EMAIL']]);
         }
 
-        if ($order['CLIENT_TG_ID']) {
+        if ($order['CLIENT_TG_ID'] && $this->tgBotToken) {
             $this->sendTelegramMessage($order['CLIENT_TG_ID'], $message);
         }
 
         $this->logNotification($order['ID'], 'client_confirmation', $order['CLIENT_EMAIL'] ?: $order['CLIENT_TG_ID']);
     }
 
-    /**
-     * Отправка уведомления об успешной оплате
-     */
     public function sendPaymentSuccessNotification($order)
     {
         $message = "💳 Оплата получена!\n\n";
@@ -102,38 +92,37 @@ class AVSNotificationService
             ], 'Y', '', [$order['CLIENT_EMAIL']]);
         }
 
-        if ($order['CLIENT_TG_ID']) {
+        if ($order['CLIENT_TG_ID'] && $this->tgBotToken) {
             $this->sendTelegramMessage($order['CLIENT_TG_ID'], $message);
         }
 
         $this->logNotification($order['ID'], 'payment_success', $order['CLIENT_EMAIL'] ?: $order['CLIENT_TG_ID']);
     }
 
-    /**
-     * Отправка напоминания о бронировании
-     */
-    public function sendReminder($order)
+    public function sendConfirmationNotification($order)
     {
-        $startTime = new \DateTime($order['START_TIME']);
-        $now = new \DateTime();
-        $hoursLeft = ($startTime->getTimestamp() - $now->getTimestamp()) / 3600;
+        $message = "📋 Бронирование подтверждено менеджером!\n\n";
+        $message .= "Номер: {$order['ORDER_NUMBER']}\n";
+        $message .= "Беседка: {$order['PAVILION_NAME']}\n";
+        $message .= "Дата: " . date('d.m.Y', strtotime($order['START_TIME'])) . "\n";
+        $message .= "Время: " . date('H:i', strtotime($order['START_TIME'])) . " - " . date('H:i', strtotime($order['END_TIME'])) . "\n";
 
-        if ($hoursLeft <= 24 && $hoursLeft > 0) {
-            $message = "🔔 Напоминание о бронировании!\n\n";
-            $message .= "Завтра в " . $startTime->format('H:i') . " ваша беседка \"{$order['PAVILION_NAME']}\"\n";
-            $message .= "Номер бронирования: {$order['ORDER_NUMBER']}\n";
+        if ($order['CLIENT_EMAIL']) {
+            \CEvent::Send('AVS_BOOKING_CONFIRMATION', 's1', [
+                'ORDER_NUMBER' => $order['ORDER_NUMBER'],
+                'CLIENT_NAME' => $order['CLIENT_NAME'],
+                'PAVILION_NAME' => $order['PAVILION_NAME'],
+                'START_TIME' => $order['START_TIME'],
+                'END_TIME' => $order['END_TIME'],
+                'PRICE' => $order['PRICE']
+            ], 'Y', '', [$order['CLIENT_EMAIL']]);
+        }
 
-            if ($order['CLIENT_TG_ID']) {
-                $this->sendTelegramMessage($order['CLIENT_TG_ID'], $message);
-            }
-
-            $this->logNotification($order['ID'], 'reminder', $order['CLIENT_TG_ID']);
+        if ($order['CLIENT_TG_ID'] && $this->tgBotToken) {
+            $this->sendTelegramMessage($order['CLIENT_TG_ID'], $message);
         }
     }
 
-    /**
-     * Отправка в Битрикс24
-     */
     private function sendToBitrix24($order)
     {
         if (!$this->b24Webhook) return;
@@ -143,8 +132,7 @@ class AVSNotificationService
             'NAME' => $order['CLIENT_NAME'],
             'PHONE' => [['VALUE' => $order['CLIENT_PHONE'], 'VALUE_TYPE' => 'WORK']],
             'COMMENTS' => "Бронирование #{$order['ORDER_NUMBER']}\nНачало: {$order['START_TIME']}\nОкончание: {$order['END_TIME']}\nСумма: {$order['PRICE']} руб.",
-            'SOURCE_ID' => 'WEB',
-            'UF_CRM_ORDER_NUMBER' => $order['ORDER_NUMBER']
+            'SOURCE_ID' => 'WEB'
         ];
 
         $ch = curl_init($this->b24Webhook . '/crm.lead.add.json');
@@ -155,20 +143,13 @@ class AVSNotificationService
         curl_close($ch);
     }
 
-    /**
-     * Отправка в Telegram
-     */
     private function sendToTelegram($message)
     {
-        $managerChatId = \Bitrix\Main\Config\Option::get('avs_booking', 'tg_manager_chat_id', '');
-        if ($this->tgBotToken && $managerChatId) {
-            $this->sendTelegramMessage($managerChatId, $message);
+        if ($this->tgBotToken && $this->tgManagerChatId) {
+            $this->sendTelegramMessage($this->tgManagerChatId, $message);
         }
     }
 
-    /**
-     * Отправка Telegram сообщения
-     */
     private function sendTelegramMessage($chatId, $message)
     {
         if (!$this->tgBotToken) return;
@@ -188,9 +169,6 @@ class AVSNotificationService
         curl_close($ch);
     }
 
-    /**
-     * Логирование уведомления
-     */
     private function logNotification($orderId, $type, $recipient)
     {
         global $DB;

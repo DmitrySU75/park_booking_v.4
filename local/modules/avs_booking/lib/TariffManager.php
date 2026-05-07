@@ -1,31 +1,36 @@
 <?php
 
+/**
+ * Файл: /local/modules/avs_booking/lib/TariffManager.php
+ */
+
 namespace AVS\Booking;
 
 class TariffManager
 {
-    /**
-     * Расчет стоимости аренды
-     */
-    public static function calculatePrice($pavilionName, $rentalType, $date, $hours = null, $discountCode = null)
+    public static function calculatePrice($pavilionId, $rentalType, $date, $hours = null, $discountCode = null)
     {
-        $gazebo = \AVSBookingModule::getGazeboDataByName($pavilionName);
+        $gazebo = \AVSBookingModule::getGazeboData($pavilionId);
         if (!$gazebo) return ['error' => 'Беседка не найдена'];
 
-        $restrictions = \AVSBookingModule::getDateRestrictions($pavilionName, $date);
+        $restrictions = \AVSBookingModule::getDateRestrictions($pavilionId, $date);
         $priceModifier = $restrictions['price_modifier'] ?? 1;
+        $minHours = (int)\Bitrix\Main\Config\Option::get('avs_booking', 'min_hours', 4);
 
         $basePrice = 0;
         $duration = 0;
 
         switch ($rentalType) {
             case 'hourly':
+                if ($hours < $minHours) {
+                    return ['error' => "Минимальная продолжительность аренды - {$minHours} часа"];
+                }
                 $basePrice = $gazebo['hourly_price'];
                 $duration = $hours;
                 $total = $basePrice * $hours;
                 break;
             case 'full_day':
-                $workEndHour = \AVSBookingModule::getWorkEndHour($pavilionName, $date);
+                $workEndHour = \AVSBookingModule::getWorkEndHour($pavilionId, $date);
                 $duration = $workEndHour - 10;
                 $total = $gazebo['full_day_price'];
                 break;
@@ -37,13 +42,11 @@ class TariffManager
                 return ['error' => 'Неизвестный тип аренды'];
         }
 
-        // Применяем модификатор цены для особых дат
         $total = $total * $priceModifier;
 
-        // Применяем скидку
         $discount = 0;
         if ($discountCode) {
-            $discountInfo = DiscountManager::applyDiscount($discountCode, $total);
+            $discountInfo = \AVSBookingDiscountManager::applyDiscount($discountCode, $total);
             if ($discountInfo['success']) {
                 $discount = $discountInfo['discount_amount'];
                 $total = $discountInfo['new_total'];
@@ -64,29 +67,6 @@ class TariffManager
         ];
     }
 
-    /**
-     * Получение доступных временных слотов
-     */
-    public static function getAvailableSlots($pavilionName, $date, $resourceId)
-    {
-        $workEndHour = \AVSBookingModule::getWorkEndHour($pavilionName, $date);
-        $minHours = (int)\Bitrix\Main\Config\Option::get('avs_booking', 'min_hours', 4);
-
-        $slots = [];
-        for ($hour = 10; $hour <= $workEndHour - $minHours; $hour++) {
-            $slots[] = [
-                'hour' => $hour,
-                'label' => $hour . ':00',
-                'value' => $hour
-            ];
-        }
-
-        return $slots;
-    }
-
-    /**
-     * Расчет стоимости продления
-     */
     public static function calculateExtensionPrice($orderId, $newEndTime)
     {
         $order = Order::get($orderId);

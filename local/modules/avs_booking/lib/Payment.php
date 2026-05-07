@@ -1,5 +1,9 @@
 <?php
 
+/**
+ * Файл: /local/modules/avs_booking/lib/Payment.php
+ */
+
 namespace AVS\Booking;
 
 class Payment
@@ -13,16 +17,24 @@ class Payment
         }
 
         $legalEntity = $order['LEGAL_ENTITY'];
-
         $legalSettings = self::getLegalEntitySettings($legalEntity);
 
         if (!$legalSettings['shop_id'] || !$legalSettings['secret_key']) {
-            return ['success' => false, 'error' => 'Payment settings not configured for this legal entity'];
+            return ['success' => false, 'error' => 'Payment settings not configured'];
+        }
+
+        $paymentAmount = $order['DEPOSIT_AMOUNT'];
+        if ($order['PAID_AMOUNT'] > 0) {
+            $paymentAmount = $order['PRICE'] - $order['PAID_AMOUNT'];
+        }
+
+        if ($paymentAmount <= 0) {
+            return ['success' => false, 'error' => 'No payment required'];
         }
 
         $paymentData = [
             'amount' => [
-                'value' => $order['PRICE'],
+                'value' => $paymentAmount,
                 'currency' => 'RUB'
             ],
             'payment_method_data' => [
@@ -40,11 +52,11 @@ class Payment
             ]
         ];
 
-        $yookassa = new YookassaHandler($legalSettings['shop_id'], $legalSettings['secret_key']);
+        $yookassa = new \AVSBookingYookassaHandler($legalSettings['shop_id'], $legalSettings['secret_key']);
         $result = $yookassa->createPayment($paymentData);
 
         if ($result && isset($result['id'])) {
-            Order::updatePaymentInfo($orderId, $result['id'], 'pending', 0);
+            Order::updatePaymentInfo($orderId, $result['id'], 'pending', $order['PAID_AMOUNT']);
             return [
                 'success' => true,
                 'payment_id' => $result['id'],
@@ -65,7 +77,6 @@ class Payment
         }
 
         $paymentId = $data['object']['id'];
-        $paymentStatus = $data['object']['status'];
 
         $orders = Order::getList(['PAYMENT_ID' => $paymentId], 1, 0);
 
@@ -77,18 +88,23 @@ class Payment
         $legalEntity = $order['LEGAL_ENTITY'];
         $legalSettings = self::getLegalEntitySettings($legalEntity);
 
-        $yookassa = new YookassaHandler($legalSettings['shop_id'], $legalSettings['secret_key']);
+        $yookassa = new \AVSBookingYookassaHandler($legalSettings['shop_id'], $legalSettings['secret_key']);
         $paymentInfo = $yookassa->getPaymentInfo($paymentId);
 
         if ($paymentInfo && $paymentInfo['status'] == 'succeeded') {
             $paidAmount = $paymentInfo['amount']['value'];
-            Order::updatePaymentInfo($order['ID'], $paymentId, 'succeeded', $paidAmount);
-            Order::updateStatus($order['ID'], 'paid');
+            $newPaidAmount = $order['PAID_AMOUNT'] + $paidAmount;
 
-            self::sendPaymentSuccessNotification($order);
+            Order::updatePaymentInfo($order['ID'], $paymentId, 'succeeded', $newPaidAmount);
+
+            if ($newPaidAmount >= $order['PRICE']) {
+                Order::updateStatus($order['ID'], 'paid');
+            }
+
+            $notification = new \AVSNotificationService();
+            $notification->sendPaymentSuccessNotification($order);
         } elseif ($paymentInfo && $paymentInfo['status'] == 'canceled') {
-            Order::updatePaymentInfo($order['ID'], $paymentId, 'canceled', 0);
-            Order::updateStatus($order['ID'], 'payment_failed');
+            Order::updatePaymentInfo($order['ID'], $paymentId, 'canceled', $order['PAID_AMOUNT']);
         }
     }
 
@@ -108,27 +124,5 @@ class Payment
         ];
 
         return $settings[$legalEntity] ?? $settings[AVS_LEGAL_BETON_SYSTEMS];
-    }
-
-    private static function sendPaymentSuccessNotification($order)
-    {
-        $adminEmail = \Bitrix\Main\Config\Option::get('avs_booking', 'admin_email', '');
-
-        if ($adminEmail) {
-            $eventFields = [
-                'ORDER_NUMBER' => $order['ORDER_NUMBER'],
-                'CLIENT_NAME' => $order['CLIENT_NAME'],
-                'PAVILION_NAME' => $order['PAVILION_NAME'],
-                'AMOUNT' => $order['PAID_AMOUNT'],
-                'START_TIME' => $order['START_TIME']->toString(),
-                'END_TIME' => $order['END_TIME']->toString()
-            ];
-
-            \CEvent::Send('AVS_BOOKING_PAYMENT_SUCCESS', 's1', $eventFields, 'Y', '', [$adminEmail]);
-        }
-
-        if ($order['CLIENT_EMAIL']) {
-            \CEvent::Send('AVS_BOOKING_PAYMENT_SUCCESS', 's1', $eventFields, 'Y', '', [$order['CLIENT_EMAIL']]);
-        }
     }
 }

@@ -1,8 +1,10 @@
 <?php
 
-namespace AVS\Booking;
+/**
+ * Файл: /local/modules/avs_booking/lib/YookassaHandler.php
+ */
 
-class YookassaHandler
+class AVSBookingYookassaHandler
 {
     private $shopId;
     private $secretKey;
@@ -25,6 +27,9 @@ class YookassaHandler
             'Idempotence-Key: ' . uniqid()
         ]);
         curl_setopt($ch, CURLOPT_USERPWD, $this->shopId . ':' . $this->secretKey);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -44,6 +49,9 @@ class YookassaHandler
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
         curl_setopt($ch, CURLOPT_USERPWD, $this->shopId . ':' . $this->secretKey);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
