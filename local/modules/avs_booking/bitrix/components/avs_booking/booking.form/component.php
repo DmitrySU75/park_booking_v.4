@@ -29,6 +29,7 @@ if (!$gazebo) {
 $arResult['GAZEBO'] = $gazebo;
 $request = Context::getCurrent()->getRequest();
 
+// Обработка POST-запроса
 if ($request->isPost() && check_bitrix_sessid()) {
     $rentalType = $request->getPost('rental_type');
     $date = $request->getPost('date');
@@ -52,68 +53,77 @@ if ($request->isPost() && check_bitrix_sessid()) {
     }
 
     if (empty($errors)) {
-        $timeRange = AVSBookingModule::calculateTimeRange($rentalType, $date, $elementId, $startHour, $hours);
+        global $DB;
+        $DB->StartTransaction();
+        
+        try {
+            $timeRange = AVSBookingModule::calculateTimeRange($rentalType, $date, $elementId, $startHour, $hours);
 
-        if ($timeRange) {
-            $restrictions = AVSBookingModule::getDateRestrictions($elementId, $date);
-            $priceModifier = $restrictions['price_modifier'] ?? 1;
+            if (!$timeRange) {
+                throw new Exception('Выбранное время выходит за пределы времени работы беседки');
+            }
 
             $priceData = \AVS\Booking\TariffManager::calculatePrice($elementId, $rentalType, $date, $hours, $discountCode);
 
             if (isset($priceData['error'])) {
-                $errors[] = $priceData['error'];
-            } else {
-                $available = true;
-                if ($gazebo['resource_id']) {
-                    $client = new AVSBookingLibreBookingClient();
-                    $available = $client->checkAvailability($gazebo['resource_id'], $timeRange['start'], $timeRange['end']);
-                }
-
-                if ($available) {
-                    $bookingData = [
-                        'pavilion_id' => $elementId,
-                        'pavilion_name' => $gazebo['name'],
-                        'client_name' => $clientName,
-                        'client_phone' => $clientPhone,
-                        'client_email' => $clientEmail,
-                        'start_time' => $timeRange['start'],
-                        'end_time' => $timeRange['end'],
-                        'price' => $priceData['total_price'],
-                        'rental_type' => $rentalType,
-                        'duration_hours' => $priceData['duration_hours'],
-                        'comment' => $comment,
-                        'discount_code' => $discountCode
-                    ];
-
-                    $reservationId = null;
-                    if ($gazebo['resource_id']) {
-                        $userData = [
-                            'name' => $clientName,
-                            'phone' => $clientPhone,
-                            'email' => $clientEmail,
-                            'comment' => $comment
-                        ];
-                        $client = new AVSBookingLibreBookingClient();
-                        $reservationId = $client->createReservation($gazebo['resource_id'], $timeRange['start'], $timeRange['end'], $userData);
-                    }
-
-                    if ($reservationId) {
-                        $bookingData['librebooking_id'] = $reservationId;
-                    }
-
-                    $orderId = AVSBookingModule::createOrder($bookingData);
-
-                    if ($orderId) {
-                        LocalRedirect($arParams['SUCCESS_PAGE'] . '?order_id=' . $orderId);
-                    } else {
-                        $errors[] = 'Ошибка создания заказа';
-                    }
-                } else {
-                    $errors[] = 'Выбранное время уже занято';
-                }
+                throw new Exception($priceData['error']);
             }
-        } else {
-            $errors[] = 'Ошибка расчета времени';
+
+            $available = true;
+            if ($gazebo['resource_id']) {
+                $client = new AVSBookingLibreBookingClient();
+                $available = $client->checkAvailability($gazebo['resource_id'], $timeRange['start'], $timeRange['end']);
+            }
+
+            if (!$available) {
+                throw new Exception('Выбранное время уже занято');
+            }
+
+            $bookingData = [
+                'pavilion_id' => $elementId,
+                'pavilion_name' => $gazebo['name'],
+                'client_name' => $clientName,
+                'client_phone' => $clientPhone,
+                'client_email' => $clientEmail,
+                'start_time' => $timeRange['start'],
+                'end_time' => $timeRange['end'],
+                'price' => $priceData['total_price'],
+                'rental_type' => $rentalType,
+                'duration_hours' => $priceData['duration_hours'],
+                'comment' => $comment,
+                'discount_code' => $discountCode
+            ];
+
+            $reservationId = null;
+            if ($gazebo['resource_id']) {
+                $userData = [
+                    'name' => $clientName,
+                    'phone' => $clientPhone,
+                    'email' => $clientEmail,
+                    'comment' => $comment
+                ];
+                $client = new AVSBookingLibreBookingClient();
+                $reservationId = $client->createReservation($gazebo['resource_id'], $timeRange['start'], $timeRange['end'], $userData);
+                
+                if (!$reservationId) {
+                    throw new Exception('Ошибка создания бронирования в системе');
+                }
+                $bookingData['librebooking_id'] = $reservationId;
+            }
+
+            $orderId = AVSBookingModule::createOrder($bookingData);
+
+            if (!$orderId) {
+                throw new Exception('Ошибка создания заказа');
+            }
+
+            $DB->Commit();
+            
+            LocalRedirect($arParams['SUCCESS_PAGE'] . '?order_id=' . $orderId);
+            
+        } catch (Exception $e) {
+            $DB->Rollback();
+            $errors[] = $e->getMessage();
         }
     }
 
@@ -133,16 +143,25 @@ if ($request->isPost() && check_bitrix_sessid()) {
     }
 }
 
+// Подготовка данных для отображения формы
 $selectedDate = $request->getPost('date') ?: date('Y-m-d');
 $arResult['SELECTED_DATE'] = $selectedDate;
 $arResult['RENTAL_TYPES'] = AVSBookingModule::getAvailableRentalTypes($elementId, $selectedDate);
 $arResult['WORK_END_HOUR'] = AVSBookingModule::getWorkEndHour($elementId, $selectedDate);
 $arResult['MIN_HOURS'] = (int)\Bitrix\Main\Config\Option::get('avs_booking', 'min_hours', 4);
+$arResult['MAX_HOURS'] = $arResult['WORK_END_HOUR'] - 10;
 
 if (isset($arResult['RENTAL_TYPES']['hourly'])) {
     $slots = [];
-    for ($hour = 10; $hour <= $arResult['WORK_END_HOUR'] - $arResult['MIN_HOURS']; $hour++) {
-        $slots[] = ['hour' => $hour, 'label' => $hour . ':00'];
+    $minHours = $arResult['MIN_HOURS'];
+    
+    for ($hour = 10; $hour <= $arResult['WORK_END_HOUR'] - $minHours; $hour++) {
+        $maxPossibleHours = $arResult['WORK_END_HOUR'] - $hour;
+        $slots[] = [
+            'hour' => $hour,
+            'label' => $hour . ':00',
+            'max_hours' => $maxPossibleHours
+        ];
     }
     $arResult['AVAILABLE_SLOTS'] = $slots;
 }
