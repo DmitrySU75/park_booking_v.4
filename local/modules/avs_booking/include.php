@@ -47,10 +47,16 @@ $GLOBALS['AVS_BOOKING_PAVILION_TO_LEGAL'] = [
     2 => AVS_LEGAL_BETON_SYSTEMS,
     3 => AVS_LEGAL_PARK_VICTORY,
     4 => AVS_LEGAL_PARK_VICTORY,
+<<<<<<< HEAD
     // ДОБАВЬТЕ ОСТАЛЬНЫЕ ID БЕСЕДОК ПО НЕОБХОДИМОСТИ
 ];
 
 // Беседки с повышенным авансом (ID из вашего инфоблока besedki)
+=======
+];
+
+// Беседки с повышенным авансом (ID)
+>>>>>>> efab6c89e78954f385bd7a0806927d1ecb5fc2bc
 $GLOBALS['AVS_BOOKING_HIGH_DEPOSIT'] = [5, 6];
 
 /**
@@ -60,9 +66,12 @@ class AVSBookingModule
 {
     private static $moduleId = 'avs_booking';
 
+<<<<<<< HEAD
     /**
      * Получение данных беседки из инфоблока (ID инфоблока = 12, код = besedki)
      */
+=======
+>>>>>>> efab6c89e78954f385bd7a0806927d1ecb5fc2bc
     public static function getGazeboData($elementId)
     {
         if (!Loader::includeModule('iblock')) return null;

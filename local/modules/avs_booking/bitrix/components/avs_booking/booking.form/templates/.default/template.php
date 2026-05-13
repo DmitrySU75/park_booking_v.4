@@ -12,6 +12,7 @@ $availableSlots = $arResult['AVAILABLE_SLOTS'];
 $selectedDate = $arResult['SELECTED_DATE'];
 $workEndHour = $arResult['WORK_END_HOUR'];
 $minHours = $arResult['MIN_HOURS'];
+$maxHours = $arResult['MAX_HOURS'];
 $errors = $arResult['ERRORS'] ?? [];
 $post = $arResult['POST'] ?? [];
 
@@ -61,7 +62,7 @@ CJSCore::Init(['jquery']);
             <select name="start_hour" id="start_hour">
                 <option value="">Выберите время</option>
                 <?php foreach ($availableSlots as $slot): ?>
-                    <option value="<?= $slot['hour'] ?>" <?= ($post['start_hour'] == $slot['hour']) ? 'selected' : '' ?>>
+                    <option value="<?= $slot['hour'] ?>" data-max-hours="<?= $slot['max_hours'] ?>" <?= ($post['start_hour'] == $slot['hour']) ? 'selected' : '' ?>>
                         <?= $slot['label'] ?>
                     </option>
                 <?php endforeach; ?>
@@ -70,11 +71,8 @@ CJSCore::Init(['jquery']);
 
         <div class="form-group hourly-fields" style="display: none;">
             <label for="hours">Продолжительность (часов) *</label>
-            <select name="hours" id="hours">
-                <option value="">Выберите продолжительность</option>
-                <?php for ($i = $minHours; $i <= 12; $i++): ?>
-                    <option value="<?= $i ?>" <?= ($post['hours'] == $i) ? 'selected' : '' ?>><?= $i ?> час(ов)</option>
-                <?php endfor; ?>
+            <select name="hours" id="hours" disabled>
+                <option value="">Сначала выберите время начала</option>
             </select>
             <small>Минимальная продолжительность: <?= $minHours ?> часа</small>
         </div>
@@ -128,14 +126,12 @@ CJSCore::Init(['jquery']);
         border-radius: 8px;
         font-family: Arial, sans-serif;
     }
-
     .avs-booking-form h2 {
         margin-top: 0;
         margin-bottom: 20px;
         color: #333;
         text-align: center;
     }
-
     .work-hours-info {
         background: #e3f2fd;
         padding: 10px;
@@ -144,18 +140,15 @@ CJSCore::Init(['jquery']);
         text-align: center;
         font-size: 14px;
     }
-
     .form-group {
         margin-bottom: 15px;
     }
-
     .form-group label {
         display: block;
         margin-bottom: 5px;
         font-weight: bold;
         color: #555;
     }
-
     .form-group input,
     .form-group select,
     .form-group textarea {
@@ -167,23 +160,24 @@ CJSCore::Init(['jquery']);
         box-sizing: border-box;
         transition: border-color 0.3s;
     }
-
     .form-group input:focus,
     .form-group select:focus,
     .form-group textarea:focus {
         border-color: #4CAF50;
         outline: none;
     }
-
+    .form-group select:disabled {
+        background-color: #f5f5f5;
+        color: #999;
+        cursor: not-allowed;
+    }
     .discount-wrapper {
         display: flex;
         gap: 10px;
     }
-
     .discount-wrapper input {
         flex: 1;
     }
-
     .btn-submit {
         background: #4CAF50;
         color: white;
@@ -195,11 +189,9 @@ CJSCore::Init(['jquery']);
         width: 100%;
         transition: background 0.3s;
     }
-
     .btn-submit:hover {
         background: #45a049;
     }
-
     .btn-small {
         background: #2196f3;
         color: white;
@@ -210,11 +202,9 @@ CJSCore::Init(['jquery']);
         font-size: 12px;
         white-space: nowrap;
     }
-
     .btn-small:hover {
         background: #1976d2;
     }
-
     .avs-booking-errors {
         margin-bottom: 20px;
         padding: 10px 15px;
@@ -222,12 +212,10 @@ CJSCore::Init(['jquery']);
         border-radius: 4px;
         border-left: 4px solid #c62828;
     }
-
     .error-message {
         color: #c62828;
         margin-bottom: 5px;
     }
-
     .price-preview {
         margin-top: 20px;
         padding: 12px;
@@ -235,36 +223,30 @@ CJSCore::Init(['jquery']);
         border-radius: 4px;
         text-align: center;
     }
-
     .price-preview .price-value {
         font-size: 24px;
         font-weight: bold;
         color: #2e7d32;
     }
-
     .price-preview .deposit-info {
         margin-top: 5px;
         color: #666;
         font-size: 14px;
     }
-
     .price-preview .discount-info {
         margin-top: 5px;
         color: #ff9800;
         font-size: 14px;
     }
-
     .hourly-fields {
         display: none;
     }
-
     .form-group small {
         display: block;
         margin-top: 5px;
         color: #999;
         font-size: 12px;
     }
-
     .restriction-note {
         background: #fff3e0;
         padding: 8px;
@@ -273,16 +255,13 @@ CJSCore::Init(['jquery']);
         color: #ff9800;
         font-size: 13px;
     }
-
     @media (max-width: 480px) {
         .avs-booking-form {
             padding: 15px;
         }
-
         .discount-wrapper {
             flex-direction: column;
         }
-
         .btn-small {
             width: 100%;
         }
@@ -292,12 +271,16 @@ CJSCore::Init(['jquery']);
 <script>
     var gazeboId = <?= $gazebo['id'] ?>;
     var minHours = <?= $minHours ?>;
+    var workEndHour = <?= $workEndHour ?>;
+    var availableSlotsData = <?= json_encode($availableSlots) ?>;
 
     $(document).ready(function() {
         $('#rental_type').change(function() {
             var rentalType = $(this).val();
             if (rentalType === 'hourly') {
                 $('.hourly-fields').show();
+                updateHoursSelectByStartHour();
+                calculatePrice();
             } else {
                 $('.hourly-fields').hide();
                 if (rentalType !== '') {
@@ -306,13 +289,96 @@ CJSCore::Init(['jquery']);
             }
         });
 
-        $('#date, #start_hour, #hours, #discount_code').change(function() {
+        $('#start_hour').change(function() {
+            updateHoursSelectByStartHour();
             calculatePrice();
+            checkAvailability();
+        });
+
+        $('#hours').change(function() {
+            calculatePrice();
+            checkAvailability();
         });
 
         $('#apply_discount').click(function() {
             calculatePrice();
         });
+
+        $('#discount_code').on('input', function() {
+            calculatePrice();
+        });
+
+        function updateHoursSelectByStartHour() {
+            var startHour = parseInt($('#start_hour').val());
+            var $hoursSelect = $('#hours');
+            
+            if (!startHour) {
+                $hoursSelect.html('<option value="">Сначала выберите время начала</option>');
+                $hoursSelect.prop('disabled', true);
+                return;
+            }
+            
+            var slotData = availableSlotsData.find(function(slot) {
+                return slot.hour == startHour;
+            });
+            
+            var maxPossibleHours = slotData ? slotData.max_hours : (workEndHour - startHour);
+            
+            var options = '<option value="">Выберите продолжительность</option>';
+            
+            for (var i = minHours; i <= maxPossibleHours; i++) {
+                options += '<option value="' + i + '">' + i + ' час(ов)</option>';
+            }
+            
+            $hoursSelect.html(options);
+            $hoursSelect.prop('disabled', false);
+            $hoursSelect.val('');
+        }
+
+        function checkAvailability() {
+            var rentalType = $('#rental_type').val();
+            var date = $('#date').val();
+            var startHour = $('#start_hour').val();
+            var hours = $('#hours').val();
+
+            if (!rentalType || !date) return;
+
+            if (rentalType === 'hourly' && (!startHour || !hours)) {
+                $('#price-preview').hide();
+                return;
+            }
+
+            $.ajax({
+                url: '/local/modules/avs_booking/ajax.php',
+                method: 'POST',
+                data: {
+                    action: 'check_availability',
+                    pavilion_id: gazeboId,
+                    rental_type: rentalType,
+                    date: date,
+                    start_hour: startHour,
+                    hours: hours
+                },
+                dataType: 'json',
+                success: function(response) {
+                    if (response.success) {
+                        if (response.available) {
+                            calculatePrice();
+                            $('#price-preview').show();
+                        } else {
+                            $('#price-preview').hide();
+                            alert('Выбранное время недоступно для бронирования');
+                        }
+                    } else if (response.error) {
+                        $('#price-preview').hide();
+                        console.error('Availability check error:', response.error);
+                    }
+                },
+                error: function() {
+                    console.error('AJAX error in checkAvailability');
+                }
+            });
+        }
 
         function calculatePrice() {
             var rentalType = $('#rental_type').val();
@@ -346,21 +412,42 @@ CJSCore::Init(['jquery']);
                         } else {
                             $('.discount-info').hide();
                         }
-                        $('#price-preview').show();
                     } else if (response.error) {
                         $('#price-preview').hide();
                         alert(response.error);
                     }
                 },
                 error: function() {
-                    $('#price-preview').hide();
+                    console.error('AJAX error in calculatePrice');
                 }
             });
         }
 
         $('#date').change(function() {
             var selectedDate = $(this).val();
-
+            
+            $.ajax({
+                url: '/local/modules/avs_booking/ajax.php',
+                method: 'POST',
+                data: {
+                    action: 'get_work_hours',
+                    pavilion_id: gazeboId,
+                    date: selectedDate
+                },
+                dataType: 'json',
+                success: function(response) {
+                    if (response.success) {
+                        workEndHour = response.work_end_hour;
+                        minHours = response.min_hours;
+                        $('.work-hours-info').html('⏰ Время работы: 10:00 - ' + workEndHour + ':00<br>Минимальная продолжительность аренды: ' + minHours + ' часа');
+                        updateAvailableSlotsData(selectedDate);
+                        if ($('#rental_type').val() === 'hourly' && $('#start_hour').val()) {
+                            updateHoursSelectByStartHour();
+                        }
+                    }
+                }
+            });
+            
             $.ajax({
                 url: '/local/modules/avs_booking/ajax.php',
                 method: 'POST',
@@ -392,6 +479,46 @@ CJSCore::Init(['jquery']);
                 }
             });
         });
+        
+        function updateAvailableSlotsData(date) {
+            $.ajax({
+                url: '/local/modules/avs_booking/ajax.php',
+                method: 'POST',
+                data: {
+                    action: 'get_available_slots_data',
+                    pavilion_id: gazeboId,
+                    date: date,
+                    work_end_hour: workEndHour,
+                    min_hours: minHours
+                },
+                dataType: 'json',
+                async: false,
+                success: function(response) {
+                    if (response.success) {
+                        availableSlotsData = response.slots;
+                        var $startHourSelect = $('#start_hour');
+                        var currentValue = $startHourSelect.val();
+                        var options = '<option value="">Выберите время</option>';
+                        
+                        availableSlotsData.forEach(function(slot) {
+                            options += '<option value="' + slot.hour + '" data-max-hours="' + slot.max_hours + '">' + slot.label + '</option>';
+                        });
+                        
+                        $startHourSelect.html(options);
+                        
+                        if (currentValue && availableSlotsData.some(function(s) { return s.hour == currentValue; })) {
+                            $startHourSelect.val(currentValue);
+                            updateHoursSelectByStartHour();
+                        } else {
+                            $startHourSelect.val('');
+                            $('#hours').html('<option value="">Сначала выберите время начала</option>');
+                            $('#hours').prop('disabled', true);
+                            $('#price-preview').hide();
+                        }
+                    }
+                }
+            });
+        }
 
         var phoneInput = document.getElementById('client_phone');
         if (phoneInput) {
@@ -409,6 +536,13 @@ CJSCore::Init(['jquery']);
                     e.target.value = '+7(';
                 }
             });
+        }
+        
+        if ($('#rental_type').val() === 'hourly') {
+            $('.hourly-fields').show();
+            if ($('#start_hour').val()) {
+                updateHoursSelectByStartHour();
+            }
         }
     });
 </script>

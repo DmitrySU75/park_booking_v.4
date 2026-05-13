@@ -2,6 +2,7 @@
 
 /**
  * Файл: /local/modules/avs_booking/ajax.php
+ * AJAX-обработчик для формы бронирования
  */
 
 require_once($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php');
@@ -15,6 +16,13 @@ CModule::IncludeModule('avs_booking');
 $action = $_REQUEST['action'] ?? '';
 
 header('Content-Type: application/json');
+
+// CSRF-защита для всех изменяющих действий
+$changingActions = ['extend_time', 'create_payment', 'apply_discount'];
+if (in_array($action, $changingActions) && !check_bitrix_sessid()) {
+    echo json_encode(['success' => false, 'error' => 'CSRF token mismatch']);
+    exit;
+}
 
 switch ($action) {
     case 'extend_time':
@@ -34,6 +42,12 @@ switch ($action) {
         break;
     case 'get_date_restrictions':
         getDateRestrictions();
+        break;
+    case 'get_work_hours':
+        getWorkHours();
+        break;
+    case 'get_available_slots_data':
+        getAvailableSlotsData();
         break;
     default:
         echo json_encode(['success' => false, 'error' => 'Unknown action']);
@@ -98,6 +112,7 @@ function checkAvailability()
         $available = $client->checkAvailability($gazebo['resource_id'], $timeRange['start'], $timeRange['end']);
         echo json_encode(['success' => true, 'available' => $available]);
     } catch (Exception $e) {
+        \Bitrix\Main\Diag\Debug::writeToFile($e->getMessage(), 'checkAvailability error', 'avs_booking.log');
         echo json_encode(['success' => false, 'available' => false, 'error' => $e->getMessage()]);
     }
 }
@@ -152,6 +167,61 @@ function getDateRestrictions()
             'price_modifier' => $restrictions['price_modifier'],
             'description' => $restrictions['description']
         ]
+    ]);
+}
+
+function getWorkHours()
+{
+    $pavilionId = intval($_REQUEST['pavilion_id'] ?? 0);
+    $date = $_REQUEST['date'] ?? '';
+
+    if (!$pavilionId || !$date) {
+        echo json_encode(['success' => false, 'error' => 'Missing parameters']);
+        return;
+    }
+
+    $workEndHour = AVSBookingModule::getWorkEndHour($pavilionId, $date);
+    echo json_encode([
+        'success' => true,
+        'work_end_hour' => $workEndHour,
+        'min_hours' => (int)\Bitrix\Main\Config\Option::get('avs_booking', 'min_hours', 4)
+    ]);
+}
+
+function getAvailableSlotsData()
+{
+    $pavilionId = intval($_REQUEST['pavilion_id'] ?? 0);
+    $date = $_REQUEST['date'] ?? '';
+    $workEndHour = intval($_REQUEST['work_end_hour'] ?? 0);
+    $minHours = intval($_REQUEST['min_hours'] ?? 0);
+
+    if (!$pavilionId || !$date) {
+        echo json_encode(['success' => false, 'error' => 'Missing parameters']);
+        return;
+    }
+
+    if (!$workEndHour) {
+        $workEndHour = AVSBookingModule::getWorkEndHour($pavilionId, $date);
+    }
+    if (!$minHours) {
+        $minHours = (int)\Bitrix\Main\Config\Option::get('avs_booking', 'min_hours', 4);
+    }
+
+    $slots = [];
+    for ($hour = 10; $hour <= $workEndHour - $minHours; $hour++) {
+        $maxPossibleHours = $workEndHour - $hour;
+        $slots[] = [
+            'hour' => $hour,
+            'label' => $hour . ':00',
+            'max_hours' => $maxPossibleHours
+        ];
+    }
+
+    echo json_encode([
+        'success' => true,
+        'slots' => $slots,
+        'work_end_hour' => $workEndHour,
+        'min_hours' => $minHours
     ]);
 }
 

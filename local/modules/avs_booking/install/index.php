@@ -73,7 +73,6 @@ class avs_booking extends CModule
     {
         global $DB;
 
-        // Устанавливаем кодировку соединения перед созданием таблиц
         $DB->Query("SET NAMES 'utf8'");
         $DB->Query("SET CHARACTER SET utf8");
 
