@@ -208,32 +208,51 @@ rm /путь/до/сайта/upload/booking_token.json
 /local/modules/avs_booking/
 ├── install/
 │   ├── index.php
-│   └── version.php
+│   ├── version.php
+│   └── db/
+│       ├── install.sql
+│       └── uninstall.sql
 ├── admin/
-│   └── avs_booking_price_periods.php
+│   ├── menu.php
+│   ├── dashboard.php
+│   ├── orders.php
+│   ├── discounts.php
+│   └── special_dates.php
+├── bitrix/
+│   └── components/
+│       └── avs_booking/
+│           └── booking.form/
+│               ├── .description.php
+│               ├── .parameters.php
+│               ├── component.php
+│               └── templates/
+│                   └── .default/
+│                       ├── template.php
+│                       ├── style.css
+│                       └── script.js
 ├── lib/
-│   ├── ApiClient.php
-│   ├── PaymentHandler.php
+│   ├── OrderTable.php
+│   ├── Order.php
+│   ├── Api.php
+│   ├── Payment.php
+│   ├── TariffManager.php
 │   ├── NotificationService.php
-│   ├── ServicesManager.php
-│   └── Export1C.php
-├── templates/
-│   └── .default/
-│       └── template.php
-├── events/
-│   └── handlers.php
+│   ├── DiscountManager.php
+│   ├── LibreBookingClient.php
+│   ├── YookassaHandler.php
+│   └── OneCIntegration.php
 ├── include.php
 ├── ajax.php
 ├── api_1c.php
+├── api.php
 ├── webhook_yookassa.php
 ├── options.php
+├── error.php (новая страница ошибки)
+├── success.php (новая страница успеха)
 ├── README.md
 ├── CHANGELOG.md
 ├── LICENSE.md
-└── docs/
-    ├── 1C_SETUP.md
-    ├── API.md
-    └── INSTALL-MODULE.md
+└── composer.json
 ```
 
 ## Обновление модуля
