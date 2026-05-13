@@ -1,4 +1,12 @@
 <?php
+
+/**
+ * Файл: /local/php_interface/LibreBookingAPI.php
+ * API клиент для LibreBooking
+ */
+
+use Bitrix\Main\Config\Option;
+
 class LibreBookingAPI
 {
     private $apiUrl;
@@ -7,22 +15,16 @@ class LibreBookingAPI
     private $cookieFile;
     private $sessionToken;
 
-    /**
-     * Конструктор
-     * @param string|null $apiUrl URL API LibreBooking
-     * @param string|null $username Логин
-     * @param string|null $password Пароль
-     */
     public function __construct($apiUrl = null, $username = null, $password = null)
     {
         if ($apiUrl === null) {
-            $apiUrl = \Bitrix\Main\Config\Option::get('avs_booking', 'api_url', '');
+            $apiUrl = Option::get('avs_booking', 'api_url', '');
         }
         if ($username === null) {
-            $username = \Bitrix\Main\Config\Option::get('avs_booking', 'api_username', '');
+            $username = Option::get('avs_booking', 'api_username', '');
         }
         if ($password === null) {
-            $password = \Bitrix\Main\Config\Option::get('avs_booking', 'api_password', '');
+            $password = Option::get('avs_booking', 'api_password', '');
         }
 
         $this->apiUrl = rtrim($apiUrl, '/');
@@ -31,15 +33,10 @@ class LibreBookingAPI
         $this->cookieFile = sys_get_temp_dir() . '/librebooking_cookie_' . md5($this->apiUrl);
     }
 
-    /**
-     * Аутентификация в LibreBooking
-     * @return bool
-     * @throws Exception
-     */
     public function authenticate()
     {
         if (!$this->apiUrl || !$this->username || !$this->password) {
-            throw new Exception('Настройки API LibreBooking не заполнены');
+            throw new Exception('Настройки API LibreBooking не заполнены в модуле avs_booking');
         }
 
         $ch = curl_init();
@@ -75,14 +72,6 @@ class LibreBookingAPI
         throw new Exception('Authentication failed. HTTP Code: ' . $httpCode);
     }
 
-    /**
-     * Проверка доступности времени
-     * @param int $resourceId ID ресурса
-     * @param string $startTime Начало (Y-m-d\TH:i:sP)
-     * @param string $endTime Конец (Y-m-d\TH:i:sP)
-     * @param int|null $excludeReservationId ID бронирования для исключения
-     * @return bool
-     */
     public function checkAvailability($resourceId, $startTime, $endTime, $excludeReservationId = null)
     {
         try {
@@ -122,15 +111,6 @@ class LibreBookingAPI
         return false;
     }
 
-    /**
-     * Создание бронирования
-     * @param int $resourceId ID ресурса
-     * @param string $startTime Начало
-     * @param string $endTime Конец
-     * @param array $userData Данные пользователя
-     * @return int|null ID бронирования
-     * @throws Exception
-     */
     public function createReservation($resourceId, $startTime, $endTime, $userData)
     {
         $this->authenticate();
@@ -167,12 +147,6 @@ class LibreBookingAPI
         throw new Exception('Reservation creation failed. HTTP Code: ' . $httpCode);
     }
 
-    /**
-     * Обновление времени бронирования
-     * @param int $reservationId ID бронирования
-     * @param string $newEndTime Новое время окончания
-     * @return bool
-     */
     public function updateReservationTime($reservationId, $newEndTime)
     {
         try {
@@ -201,14 +175,6 @@ class LibreBookingAPI
         return $httpCode == 200;
     }
 
-    /**
-     * Перемещение бронирования на другой ресурс/время
-     * @param int $reservationId ID бронирования
-     * @param int $newResourceId Новый ID ресурса
-     * @param string $newStartTime Новое время начала
-     * @param string $newEndTime Новое время окончания
-     * @return bool
-     */
     public function moveReservation($reservationId, $newResourceId, $newStartTime, $newEndTime)
     {
         try {
@@ -239,11 +205,6 @@ class LibreBookingAPI
         return $httpCode == 200;
     }
 
-    /**
-     * Отмена бронирования
-     * @param int $reservationId ID бронирования
-     * @return bool
-     */
     public function cancelReservation($reservationId)
     {
         try {
@@ -269,12 +230,6 @@ class LibreBookingAPI
         return $httpCode == 200;
     }
 
-    /**
-     * Получение доступных слотов для ресурса на дату
-     * @param int $resourceId ID ресурса
-     * @param string $date Дата (Y-m-d)
-     * @return array
-     */
     public function getAvailableSlots($resourceId, $date)
     {
         try {
@@ -283,8 +238,8 @@ class LibreBookingAPI
             return [];
         }
 
-        $workEndHour = (int)\Bitrix\Main\Config\Option::get('avs_booking', 'winter_end_hour', 22);
-        $minHours = (int)\Bitrix\Main\Config\Option::get('avs_booking', 'min_hours', 4);
+        $workEndHour = (int)Option::get('avs_booking', 'winter_end_hour', 22);
+        $minHours = (int)Option::get('avs_booking', 'min_hours', 4);
 
         $slots = [];
         for ($hour = 10; $hour <= $workEndHour - $minHours; $hour++) {
@@ -303,11 +258,6 @@ class LibreBookingAPI
         return $slots;
     }
 
-    /**
-     * Получение информации о ресурсе
-     * @param int $resourceId ID ресурса
-     * @return array|null
-     */
     public function getResourceInfo($resourceId)
     {
         try {
@@ -336,10 +286,6 @@ class LibreBookingAPI
         return null;
     }
 
-    /**
-     * Получение текущей сессии
-     * @return string|null
-     */
     public function getSessionToken()
     {
         return $this->sessionToken;

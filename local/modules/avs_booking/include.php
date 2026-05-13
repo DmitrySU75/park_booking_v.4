@@ -8,55 +8,22 @@
 use Bitrix\Main\Loader;
 use Bitrix\Main\Config\Option;
 
-// Подключаем LibreBookingAPI из /local/php_interface/ если он там есть
+// ПРОВЕРЯЕМ СУЩЕСТВОВАНИЕ ФАЙЛА LIBREBOOKING API
 $libreBookingApiPath = $_SERVER['DOCUMENT_ROOT'] . '/local/php_interface/LibreBookingAPI.php';
-if (file_exists($libreBookingApiPath)) {
-    require_once $libreBookingApiPath;
-} else {
-    // Создаем заглушку, если файла нет
-    if (!class_exists('LibreBookingAPI')) {
-        class LibreBookingAPI
-        {
-            public function __construct($apiUrl = null, $username = null, $password = null) {}
-            public function authenticate()
-            {
-                return false;
-            }
-            public function checkAvailability($resourceId, $startTime, $endTime, $excludeReservationId = null)
-            {
-                return true;
-            }
-            public function createReservation($resourceId, $startTime, $endTime, $userData)
-            {
-                return null;
-            }
-            public function updateReservationTime($reservationId, $newEndTime)
-            {
-                return false;
-            }
-            public function moveReservation($reservationId, $newResourceId, $newStartTime, $newEndTime)
-            {
-                return false;
-            }
-            public function cancelReservation($reservationId)
-            {
-                return false;
-            }
-            public function getAvailableSlots($resourceId, $date)
-            {
-                return [];
-            }
-            public function getResourceInfo($resourceId)
-            {
-                return null;
-            }
-            public function getSessionToken()
-            {
-                return null;
-            }
+if (!file_exists($libreBookingApiPath)) {
+    // В PRODUCTION НЕ ДОПУСКАЕМ РАБОТУ МОДУЛЯ БЕЗ РЕАЛЬНОГО API
+    if (file_exists($_SERVER['DOCUMENT_ROOT'] . '/bitrix/modules/main/include/prolog_before.php')) {
+        global $USER;
+        if (isset($USER) && $USER->IsAdmin()) {
+            ShowError('Модуль avs_booking: Файл LibreBookingAPI.php не найден по пути: ' . $libreBookingApiPath . '. Интеграция с системой бронирования не работает.');
         }
     }
+    
+    // ВЫБРАСЫВАЕМ ИСКЛЮЧЕНИЕ ВМЕСТО СОЗДАНИЯ ЗАГЛУШКИ
+    throw new Exception('LibreBookingAPI class not found. Please ensure /local/php_interface/LibreBookingAPI.php exists.');
 }
+
+require_once $libreBookingApiPath;
 
 // Подключаем классы модуля
 require_once __DIR__ . '/lib/OrderTable.php';
@@ -74,16 +41,17 @@ require_once __DIR__ . '/lib/OneCIntegration.php';
 define('AVS_LEGAL_BETON_SYSTEMS', 'beton_systems');
 define('AVS_LEGAL_PARK_VICTORY', 'park_victory');
 
-// Маппинг ID беседок к юридическим лицам
+// Маппинг ID беседок к юридическим лицам (ID ИЗ ВАШЕГО ИНФОБЛОКА besedki)
 $GLOBALS['AVS_BOOKING_PAVILION_TO_LEGAL'] = [
-    1 => AVS_LEGAL_BETON_SYSTEMS,      // Шарташ
-    2 => AVS_LEGAL_BETON_SYSTEMS,      // Чемоданчик
-    3 => AVS_LEGAL_PARK_VICTORY,       // Виктори парк
-    4 => AVS_LEGAL_PARK_VICTORY,       // Виктори Озеро
+    1 => AVS_LEGAL_BETON_SYSTEMS,
+    2 => AVS_LEGAL_BETON_SYSTEMS,
+    3 => AVS_LEGAL_PARK_VICTORY,
+    4 => AVS_LEGAL_PARK_VICTORY,
+    // ДОБАВЬТЕ ОСТАЛЬНЫЕ ID БЕСЕДОК ПО НЕОБХОДИМОСТИ
 ];
 
-// Беседки с повышенным авансом (ID)
-$GLOBALS['AVS_BOOKING_HIGH_DEPOSIT'] = [5, 6]; // Теремок, Сибирская
+// Беседки с повышенным авансом (ID из вашего инфоблока besedki)
+$GLOBALS['AVS_BOOKING_HIGH_DEPOSIT'] = [5, 6];
 
 /**
  * Класс AVSBookingModule - основной класс модуля
@@ -93,9 +61,7 @@ class AVSBookingModule
     private static $moduleId = 'avs_booking';
 
     /**
-     * Получение данных беседки из инфоблока
-     * @param int $elementId ID элемента инфоблока
-     * @return array|null
+     * Получение данных беседки из инфоблока (ID инфоблока = 12, код = besedki)
      */
     public static function getGazeboData($elementId)
     {
@@ -103,7 +69,7 @@ class AVSBookingModule
 
         $res = \CIBlockElement::GetList(
             [],
-            ['ID' => (int)$elementId, 'ACTIVE' => 'Y'],
+            ['ID' => (int)$elementId, 'IBLOCK_ID' => 12, 'ACTIVE' => 'Y'],
             false,
             false,
             [
@@ -137,11 +103,6 @@ class AVSBookingModule
         return null;
     }
 
-    /**
-     * Получение дефолтной суммы аванса
-     * @param int $pavilionId ID беседки
-     * @return float
-     */
     private static function getDefaultDeposit($pavilionId)
     {
         global $AVS_BOOKING_HIGH_DEPOSIT;
@@ -153,23 +114,12 @@ class AVSBookingModule
         return (float)Option::get(self::$moduleId, 'default_deposit', 2000);
     }
 
-    /**
-     * Получение юридического лица по ID беседки
-     * @param int $pavilionId ID беседки
-     * @return string
-     */
     public static function getLegalEntityByPavilionId($pavilionId)
     {
         global $AVS_BOOKING_PAVILION_TO_LEGAL;
         return $AVS_BOOKING_PAVILION_TO_LEGAL[$pavilionId] ?? AVS_LEGAL_BETON_SYSTEMS;
     }
 
-    /**
-     * Обновление цен беседки в инфоблоке
-     * @param int $pavilionId ID беседки
-     * @param array $prices Цены
-     * @return bool
-     */
     public static function updateGazeboPrices($pavilionId, $prices)
     {
         if (!Loader::includeModule('iblock')) return false;
@@ -185,18 +135,11 @@ class AVSBookingModule
         return true;
     }
 
-    /**
-     * Проверка летнего периода для беседки
-     * @param int $pavilionId ID беседки
-     * @param string $date Дата
-     * @return bool
-     */
     public static function isSummerPeriod($pavilionId, $date)
     {
         $gazebo = self::getGazeboData($pavilionId);
         if (!$gazebo) return false;
 
-        // Шарташ и Чемоданчик не переходят на летний период
         $noSummerParks = ['Шарташ', 'Чемоданчик'];
         if (in_array($gazebo['name'], $noSummerParks)) {
             return false;
@@ -212,12 +155,6 @@ class AVSBookingModule
         return ($dateObj >= $start && $dateObj <= $end);
     }
 
-    /**
-     * Получение времени окончания работы
-     * @param int $pavilionId ID беседки
-     * @param string $date Дата
-     * @return int
-     */
     public static function getWorkEndHour($pavilionId, $date)
     {
         if (self::isSummerPeriod($pavilionId, $date)) {
@@ -226,12 +163,6 @@ class AVSBookingModule
         return (int)Option::get(self::$moduleId, 'winter_end_hour', 22);
     }
 
-    /**
-     * Получение ограничений для даты
-     * @param int $pavilionId ID беседки
-     * @param string $date Дата
-     * @return array
-     */
     public static function getDateRestrictions($pavilionId, $date)
     {
         global $DB;
@@ -251,7 +182,6 @@ class AVSBookingModule
             ];
         }
 
-        // Проверка праздничных дат
         $holidayDates = Option::get(self::$moduleId, 'holiday_dates', '');
         if ($holidayDates) {
             $holidays = explode(',', $holidayDates);
@@ -266,7 +196,6 @@ class AVSBookingModule
             }
         }
 
-        // Проверка выходных дней
         $weekendRestriction = Option::get(self::$moduleId, 'weekend_restriction', 'no');
         if ($weekendRestriction === 'full_day_only') {
             $dayOfWeek = date('N', strtotime($date));
@@ -290,12 +219,6 @@ class AVSBookingModule
         ];
     }
 
-    /**
-     * Получение доступных типов аренды
-     * @param int $pavilionId ID беседки
-     * @param string $date Дата
-     * @return array
-     */
     public static function getAvailableRentalTypes($pavilionId, $date)
     {
         $gazebo = self::getGazeboData($pavilionId);
@@ -322,15 +245,6 @@ class AVSBookingModule
         return $allTypes;
     }
 
-    /**
-     * Расчет временного диапазона
-     * @param string $rentalType Тип аренды
-     * @param string $date Дата
-     * @param int $pavilionId ID беседки
-     * @param int|null $startHour Час начала
-     * @param int|null $hours Количество часов
-     * @return array|null
-     */
     public static function calculateTimeRange($rentalType, $date, $pavilionId, $startHour = null, $hours = null)
     {
         $timezone = '+05:00';
@@ -369,32 +283,16 @@ class AVSBookingModule
         }
     }
 
-    /**
-     * Создание заказа
-     * @param array $data Данные заказа
-     * @return int|false
-     */
     public static function createOrder($data)
     {
         return \AVS\Booking\Order::create($data);
     }
 
-    /**
-     * Получение заказа по ID
-     * @param int $orderId ID заказа
-     * @return array|null
-     */
     public static function getOrder($orderId)
     {
         return \AVS\Booking\Order::get($orderId);
     }
 
-    /**
-     * Получение списка заказов
-     * @param array $filter Фильтр
-     * @param int $limit Лимит
-     * @return array
-     */
     public static function getOrdersList($filter = [], $limit = 100)
     {
         return \AVS\Booking\Order::getList($filter, $limit, 0);
