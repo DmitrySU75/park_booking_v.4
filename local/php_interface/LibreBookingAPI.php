@@ -3,6 +3,7 @@
 /**
  * Файл: /local/php_interface/LibreBookingAPI.php
  * API клиент для LibreBooking
+ * Версия: 4.5.0
  */
 
 use Bitrix\Main\Config\Option;
@@ -14,6 +15,9 @@ class LibreBookingAPI
     private $password;
     private $cookieFile;
     private $sessionToken;
+    private $userId;
+    private $lastAuthTime = 0;
+    private $authLifetime = 3600;
 
     public function __construct($apiUrl = null, $username = null, $password = null)
     {
@@ -35,12 +39,16 @@ class LibreBookingAPI
 
     public function authenticate()
     {
+        if ($this->sessionToken && $this->userId && (time() - $this->lastAuthTime) < $this->authLifetime) {
+            return true;
+        }
+
         if (!$this->apiUrl || !$this->username || !$this->password) {
-            throw new Exception('Настройки API LibreBooking не заполнены в модуле avs_booking');
+            throw new Exception('Настройки API LibreBooking не заполнены');
         }
 
         $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $this->apiUrl . '/WebService/Authentication/Authenticate');
+        curl_setopt($ch, CURLOPT_URL, $this->apiUrl . '/Web/Services/index.php/Authentication/Authenticate');
         curl_setopt($ch, CURLOPT_POST, true);
         curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode([
             'username' => $this->username,
@@ -52,7 +60,7 @@ class LibreBookingAPI
         curl_setopt($ch, CURLOPT_COOKIEFILE, $this->cookieFile);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -66,10 +74,22 @@ class LibreBookingAPI
         if ($httpCode == 200) {
             $data = json_decode($response, true);
             $this->sessionToken = $data['sessionToken'] ?? null;
+            $this->userId = $data['userId'] ?? null;
+            $this->lastAuthTime = time();
             return true;
         }
 
         throw new Exception('Authentication failed. HTTP Code: ' . $httpCode);
+    }
+
+    public function getSessionToken()
+    {
+        return $this->sessionToken;
+    }
+
+    public function getUserId()
+    {
+        return $this->userId;
     }
 
     public function checkAvailability($resourceId, $startTime, $endTime, $excludeReservationId = null)
@@ -81,7 +101,7 @@ class LibreBookingAPI
         }
 
         $ch = curl_init();
-        $url = $this->apiUrl . '/WebService/Reservations/Availability?' . http_build_query([
+        $url = $this->apiUrl . '/Web/Services/index.php/Reservations/Availability?' . http_build_query([
             'resourceId' => $resourceId,
             'startDateTime' => $startTime,
             'endDateTime' => $endTime
@@ -93,11 +113,15 @@ class LibreBookingAPI
 
         curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json',
+            'X-Booked-SessionToken: ' . $this->sessionToken,
+            'X-Booked-UserId: ' . $this->userId
+        ]);
         curl_setopt($ch, CURLOPT_COOKIEFILE, $this->cookieFile);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -111,12 +135,78 @@ class LibreBookingAPI
         return false;
     }
 
+    public function getReservations($startDateTime = null, $endDateTime = null, $resourceId = null, $userId = null)
+    {
+        $this->authenticate();
+        
+        $queryParams = [];
+        if ($startDateTime) $queryParams['startDateTime'] = $startDateTime;
+        if ($endDateTime) $queryParams['endDateTime'] = $endDateTime;
+        if ($resourceId) $queryParams['resourceId'] = $resourceId;
+        if ($userId) $queryParams['userId'] = $userId;
+        
+        $url = $this->apiUrl . '/Web/Services/index.php/Reservations/';
+        if (!empty($queryParams)) {
+            $url .= '?' . http_build_query($queryParams);
+        }
+        
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json',
+            'X-Booked-SessionToken: ' . $this->sessionToken,
+            'X-Booked-UserId: ' . $this->userId
+        ]);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($httpCode == 200) {
+            $data = json_decode($response, true);
+            return $data['reservations'] ?? [];
+        }
+        
+        throw new Exception('GetReservations failed. HTTP Code: ' . $httpCode);
+    }
+
+    public function getReservation($referenceNumber)
+    {
+        $this->authenticate();
+        
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $this->apiUrl . '/Web/Services/index.php/Reservations/' . $referenceNumber);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json',
+            'X-Booked-SessionToken: ' . $this->sessionToken,
+            'X-Booked-UserId: ' . $this->userId
+        ]);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        
+        if ($httpCode == 200) {
+            return json_decode($response, true);
+        }
+        
+        return null;
+    }
+
     public function createReservation($resourceId, $startTime, $endTime, $userData)
     {
         $this->authenticate();
 
         $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $this->apiUrl . '/WebService/Reservations');
+        curl_setopt($ch, CURLOPT_URL, $this->apiUrl . '/Web/Services/index.php/Reservations/');
         curl_setopt($ch, CURLOPT_POST, true);
         curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode([
             'resourceId' => $resourceId,
@@ -129,11 +219,14 @@ class LibreBookingAPI
             'description' => $userData['comment'] ?? ''
         ]));
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-        curl_setopt($ch, CURLOPT_COOKIEFILE, $this->cookieFile);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json',
+            'X-Booked-SessionToken: ' . $this->sessionToken,
+            'X-Booked-UserId: ' . $this->userId
+        ]);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -141,32 +234,37 @@ class LibreBookingAPI
 
         if ($httpCode == 200 || $httpCode == 201) {
             $data = json_decode($response, true);
-            return $data['reservationId'] ?? null;
+            return $data['referenceNumber'] ?? null;
         }
 
         throw new Exception('Reservation creation failed. HTTP Code: ' . $httpCode);
     }
 
-    public function updateReservationTime($reservationId, $newEndTime)
+    public function updateReservation($referenceNumber, $startTime, $endTime, $resourceId = null)
     {
-        try {
-            $this->authenticate();
-        } catch (Exception $e) {
-            return false;
+        $this->authenticate();
+
+        $data = [
+            'startDateTime' => $startTime,
+            'endDateTime' => $endTime
+        ];
+        if ($resourceId) {
+            $data['resourceId'] = $resourceId;
         }
 
         $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $this->apiUrl . '/WebService/Reservations/' . $reservationId);
-        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode([
-            'endDateTime' => $newEndTime
-        ]));
+        curl_setopt($ch, CURLOPT_URL, $this->apiUrl . '/Web/Services/index.php/Reservations/' . $referenceNumber);
+        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'POST');
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-        curl_setopt($ch, CURLOPT_COOKIEFILE, $this->cookieFile);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json',
+            'X-Booked-SessionToken: ' . $this->sessionToken,
+            'X-Booked-UserId: ' . $this->userId
+        ]);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -175,53 +273,22 @@ class LibreBookingAPI
         return $httpCode == 200;
     }
 
-    public function moveReservation($reservationId, $newResourceId, $newStartTime, $newEndTime)
+    public function cancelReservation($referenceNumber)
     {
-        try {
-            $this->authenticate();
-        } catch (Exception $e) {
-            return false;
-        }
+        $this->authenticate();
 
         $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $this->apiUrl . '/WebService/Reservations/' . $reservationId);
-        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'PUT');
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode([
-            'resourceId' => $newResourceId,
-            'startDateTime' => $newStartTime,
-            'endDateTime' => $newEndTime
-        ]));
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-        curl_setopt($ch, CURLOPT_COOKIEFILE, $this->cookieFile);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        return $httpCode == 200;
-    }
-
-    public function cancelReservation($reservationId)
-    {
-        try {
-            $this->authenticate();
-        } catch (Exception $e) {
-            return false;
-        }
-
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $this->apiUrl . '/WebService/Reservations/' . $reservationId);
+        curl_setopt($ch, CURLOPT_URL, $this->apiUrl . '/Web/Services/index.php/Reservations/' . $referenceNumber);
         curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'DELETE');
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-        curl_setopt($ch, CURLOPT_COOKIEFILE, $this->cookieFile);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/json',
+            'X-Booked-SessionToken: ' . $this->sessionToken,
+            'X-Booked-UserId: ' . $this->userId
+        ]);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
 
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -256,38 +323,5 @@ class LibreBookingAPI
         }
 
         return $slots;
-    }
-
-    public function getResourceInfo($resourceId)
-    {
-        try {
-            $this->authenticate();
-        } catch (Exception $e) {
-            return null;
-        }
-
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $this->apiUrl . '/WebService/Resources/' . $resourceId);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-        curl_setopt($ch, CURLOPT_COOKIEFILE, $this->cookieFile);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        if ($httpCode == 200) {
-            return json_decode($response, true);
-        }
-
-        return null;
-    }
-
-    public function getSessionToken()
-    {
-        return $this->sessionToken;
     }
 }
