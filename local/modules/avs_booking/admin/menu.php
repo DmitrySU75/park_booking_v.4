@@ -46,6 +46,12 @@ if ($APPLICATION->GetGroupRight($module_id) >= 'R') {
                 'items_id' => 'avs_booking_discounts',
             ],
             [
+                'text' => 'Ценовые правила',  // НОВЫЙ ПУНКТ
+                'url' => 'avs_booking_price_rules.php?lang=' . LANGUAGE_ID,
+                'title' => 'Управление ценовыми правилами',
+                'items_id' => 'avs_booking_price_rules',
+            ],
+            [
                 'text' => 'Настройки',
                 'url' => '/bitrix/admin/settings.php?mid=avs_booking&lang=' . LANGUAGE_ID,
                 'title' => 'Настройки модуля',
